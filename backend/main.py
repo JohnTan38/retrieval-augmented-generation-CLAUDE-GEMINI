@@ -1,6 +1,7 @@
 import os
 from typing import Optional
 
+import requests
 from dotenv import load_dotenv
 from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -86,6 +87,29 @@ class QueryRequest(BaseModel):
 
 class SaveKeyRequest(BaseModel):
     api_key: str
+
+
+class ModelsRequest(BaseModel):
+    api_key: Optional[str] = None
+
+
+# Tokens that mark a model as NOT a general text-chat model (image/audio/etc.).
+_MODEL_EXCLUDE = (
+    "image", "tts", "audio", "embedding", "computer-use", "robotics",
+    "nano-banana", "live", "deep-research", "antigravity", "lyria", "omni", "aqa",
+)
+
+
+def _is_text_gemini(m: dict) -> bool:
+    """Keep only general Gemini text models that support generateContent."""
+    name = m.get("name", "")
+    if not name.startswith("models/gemini-"):
+        return False  # drops gemma, lyria, nano-banana, antigravity, deep-research, ...
+    methods = m.get("supportedGenerationMethods") or m.get("supported_generation_methods") or []
+    if "generateContent" not in methods:
+        return False
+    short = name[len("models/"):].lower()
+    return not any(tok in short for tok in _MODEL_EXCLUDE)
 
 
 def _format_file_meta(filename, meta, uploaded=False):
@@ -304,6 +328,41 @@ def save_key(request: SaveKeyRequest):
         "status": "success",
         "message": "API key accepted. It is used per request and not stored on the server.",
     }
+
+
+@app.post("/api/models")
+def list_models(request: ModelsRequest):
+    """Proxy Google's model list (using the caller's key) and return only the
+    text-chat Gemini models that support generateContent. Same-origin, so the
+    browser avoids CORS to Google and the key never travels in a URL the app
+    logs. The frontend uses this to keep its model dropdown current."""
+    api_key = (
+        request.api_key or os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY") or ""
+    ).strip()
+    if not api_key:
+        raise HTTPException(status_code=400, detail="An API key is required to list models.")
+
+    try:
+        resp = requests.get(
+            "https://generativelanguage.googleapis.com/v1beta/models",
+            params={"key": api_key, "pageSize": 1000},
+            timeout=15,
+        )
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Could not reach the model service: {e}")
+
+    if resp.status_code != 200:
+        # Surface Google's reason (bad key, blocked, disabled) so the UI can show it.
+        raise HTTPException(status_code=resp.status_code, detail=resp.text[:500])
+
+    seen, models = set(), []
+    for m in resp.json().get("models", []):
+        if _is_text_gemini(m):
+            mid = m["name"][len("models/"):]
+            if mid not in seen:
+                seen.add(mid)
+                models.append({"id": mid, "label": m.get("displayName") or mid})
+    return {"models": models}
 
 
 @app.get("/api/sample-questions")
