@@ -4,6 +4,15 @@ import React, { useEffect, useRef, useState } from 'react';
 const MAX_UPLOAD_FILES = 5;
 const MAX_UPLOAD_BYTES = 10 * 1024 * 1024;
 
+// Shown before a key is entered (and if the live model list can't be fetched).
+// The "-latest" aliases always resolve to a current model, so they never 404.
+const FALLBACK_MODELS = [
+  { id: 'gemini-flash-latest', label: 'Gemini Flash (latest)' },
+  { id: 'gemini-flash-lite-latest', label: 'Gemini Flash-Lite (latest)' },
+  { id: 'gemini-pro-latest', label: 'Gemini Pro (latest)' },
+  { id: 'gemini-2.5-flash', label: 'Gemini 2.5 Flash' },
+];
+
 function getSessionId() {
   const existing = window.localStorage.getItem('rag_session_id');
   if (existing) return existing;
@@ -43,6 +52,8 @@ function App() {
   const [apiKey, setApiKey] = useState(() => window.localStorage.getItem('rag_api_key') || '');
   const [keyStatus, setKeyStatus] = useState('');
   const [model, setModel] = useState('gemini-2.5-flash');
+  const [availableModels, setAvailableModels] = useState(FALLBACK_MODELS);
+  const [modelsLoading, setModelsLoading] = useState(false);
   const [mode, setMode] = useState('classic');
   const [topK, setTopK] = useState(5);
   const [useFilter, setUseFilter] = useState(true);
@@ -54,7 +65,36 @@ function App() {
   useEffect(() => {
     fetchIndexStatus();
     fetchSampleQuestions();
+    if (apiKey) fetchModels(apiKey);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Populate the model dropdown from the user's own key, so it never goes stale
+  // as Google rotates models. Falls back to FALLBACK_MODELS on any failure.
+  const fetchModels = async (key) => {
+    const useKey = (key ?? apiKey).trim();
+    if (!useKey) return; // no key yet -> keep the fallback list
+    setModelsLoading(true);
+    try {
+      const res = await fetch('/api/models', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ api_key: useKey }),
+      });
+      const data = await res.json();
+      if (res.ok && Array.isArray(data.models) && data.models.length) {
+        setAvailableModels(data.models);
+        // If the current selection is no longer offered, drop to the first available.
+        setModel((current) =>
+          data.models.some((m) => m.id === current) ? current : data.models[0].id,
+        );
+      }
+    } catch (e) {
+      console.error('Failed to load model list; using fallback', e);
+    } finally {
+      setModelsLoading(false);
+    }
+  };
 
   const sessionQuery = () => `session_id=${encodeURIComponent(sessionId)}`;
 
@@ -133,6 +173,7 @@ function App() {
     // and a shared server key would leak between users on a public deployment).
     window.localStorage.setItem('rag_api_key', key);
     setKeyStatus('Saved in this browser — used for your queries.');
+    fetchModels(key); // refresh the model list for this key
     // Optional: ask the backend to sanity-check the key shape (it does NOT store it).
     try {
       await fetch('/api/save-key', {
@@ -347,13 +388,17 @@ function App() {
           </div>
 
           <div className="setting-row">
-            <label>Gemini Model</label>
+            <label>Gemini Model {modelsLoading ? '(updating…)' : ''}</label>
             <select className="setting-select" value={model} onChange={(e) => setModel(e.target.value)}>
-              <option value="gemini-2.5-flash">gemini-2.5-flash (Recommended)</option>
-              <option value="gemini-2.5-pro">gemini-2.5-pro (Complex reasoning)</option>
-              <option value="gemini-2.0-flash">gemini-2.0-flash (Fast)</option>
-              <option value="gemini-1.5-flash">gemini-1.5-flash (Standard)</option>
+              {availableModels.map((m) => (
+                <option key={m.id} value={m.id}>{m.label}</option>
+              ))}
             </select>
+            <small className="setting-hint">
+              {apiKey
+                ? 'Live list from your key — retired models are dropped automatically.'
+                : 'Save your API key to load the models it can call.'}
+            </small>
           </div>
 
           <div className="setting-row">
