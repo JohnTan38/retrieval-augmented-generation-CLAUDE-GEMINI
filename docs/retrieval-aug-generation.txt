@@ -1,0 +1,206 @@
+<project-objectives>1) code and implement retrieval augmented generation project for users to query documents; return relevant and accurate results, 2) modern sleek polished frontend for user interaction - ask queries of documents, list 3 sample example questions, intuitive navigation</project-objectives><accuracy-relevancy>prioritize relevancy, accuracy over speed when returning search results</accuracy-relevancy><rag-pipeline>plan and design comprehensive RAG pipeline, re-rankers when appropriate, use appropriate Gemini models for api calls</rag-pipeline><query-optimizing>Optimizing RAG pipelines relies on multi-layered prompt strategies, as up to 67% of RAG failures stem from generation rather than retrieval. To achieve high-quality responses, you need distinct prompts for Query Optimization, Contextual Retrieval, Context Filtering, and Final Answer Grounding. 1. Pre-Retrieval: Query Optimization & ExpansionRaw user queries often lack keywords or context. Use these prompts to rewrite or expand the query before it hits your vector database.Query Expansion PrompttextGiven the user's question, expand it into three search-friendly queries. Generate exact keyword matches, synonyms, and variations related to the core topic. Return the results as a clean, comma-separated list.
+User Question: "{user_query}"</query-optimizing><reranking>2. Post-Retrieval: Filtering and RerankingPrevent context overflow and limit your model's scope by filtering irrelevant snippets retrieved by your database.Relevance & Irrelevance Detection PrompttextSystem: You are an expert data filter. Evaluate the retrieved context pieces. If the context is completely unrelated to the user's question, reply with exactly: "I cannot find the answer in the provided context."
+User Question: "{user_query}"
+Retrieved Context: "{context}"</reranking><generation-final-answer>Generation: Final Answer GroundingThis is the most critical prompt. It prevents hallucinations by strictly constraining the model to the provided context and defining the citation format.Strict Grounding & Citation PrompttextSystem: You are a helpful AI assistant. You must answer the user's question using ONLY the provided retrieved context. Do not use your pre-trained knowledge. 
+
+If the answer cannot be found in the context, say exactly: "I am sorry, but I do not have enough information to answer that question based on the provided documents."
+
+Rules for formatting:
+1. Every major claim must be cited directly using the exact source name provided in the context.
+2. Format citations as [Source Name, Page X].
+3. Maintain a highly professional and factual tone.
+
+User Question: "{user_query}"
+Retrieved Context: "{context}"
+Response:</reranking-generation-final-answer><advanced-reasoning>Advanced: Reasoning Models & Chain-of-ThoughtIf you are using reasoning-based AI models (such as deep reasoning LLMs), you can instruct them to process the context step-by-step before finalizing an answer.Chain-of-Thought (CoT) PrompttextSystem: You are an expert analyst. Think step-by-step through the retrieved context to answer the user's question. First, identify the key pieces of evidence. Second, logically deduce the answer. Third, synthesize the response.
+
+User Question: "{user_query}"
+Context: "{context}"
+Thought Process: Let's think step by step to ensure the final answer is completel</advanced-reasoning><grounding-for-multi-pdf-analysis>When handling sensitive corporate data, use this strict structural prompt to force Gemini to use the provided files and prevent hallucinations:textSystem: You are an elite corporate auditor executing strict document analysis. 
+You are provided with several confidential PDF documents attached directly to your context.
+
+CRITICAL RULES:
+1. Grounding: Answer the user's inquiry using ONLY the data explicitly provided within the uploaded documents. Do not assume, extrapolate, or use outside training data.
+2. Missing Information: If the answer cannot be found or verified across the documents, state exactly: "CRITICAL: The provided documents do not contain sufficient data to answer this query."
+3. Citations: You must trace every claim, metric, or conclusion back to its specific source document. Append the filename and page number in brackets, for example: [Q2_Report.pdf, Page 14].
+
+User Query: "{user_query}"
+Answer:</grounding-for-multi-pdf-analysis><best-practices-architecture>Turn Off Data Logging: If you are using the Google AI Studio or Vertex AI API, ensure your data privacy settings are set so your data is not used for model training.Leverage Context Caching: Because multiple PDFs consume a large number of input tokens, utilize Context Caching via the Gemini API. This saves up to 90% on input token costs ($0.15 vs $1.50 per 1M tokens) when asking multiple consecutive questions about the same batch of PDFs.Set Media Resolution to High: Ensure the media_resolution flag in your API call is set to high or ultra_high if your corporate PDFs contain complex financial tables, charts, or low-contrast text</best-practices-architecture><gemini-docs>https://ai.google.dev/gemini-api/docs/long-context, https://www.linkedin.com/pulse/gemini-35-flash-technical-deep-dive-googles-frontier-jin-tan-ruan-4drge/</gemini-docs><skills-md>develop, research web, write any required SKILLS for pipeline implementation and frontend design</skills-md><frontend>awesome modern sleek polished user interfaces, seamless transitions framer motion, intuitive navigation, color gradients within context of Singapore social service</frontend><to-do>awesome RAG application that is awesome, impressive, user-friendly</to-do>
+------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+GEMINI_API_KEY=AQ.Ab8RN6KD2SxEe8_2GaxVVoj4Dq32brquewvf9PSQumjCbBqbgA
+name: gemini-flash-key
+project name: projects/502140710317
+project number: 502140710317
+
+-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+Here's the deployment plan for `rag/` to Vercel, optimized for many concurrent users with low latency.
+
+## Architecture decisions
+
+| Concern | Choice | Why |
+|---|---|---|
+| Backend runtime | **Vercel Python Functions on Fluid Compute** (default) | Keeps FastAPI as-is; Fluid reuses warm instances across concurrent requests → no per-request cold start |
+| Region | **`sin1` (Singapore)** | Lowest latency for SG users + closest to Gemini |
+| Index storage | **Pre-built JSON shipped with the deploy** | TF-IDF index built once at build-time, loaded into memory on cold start (~ms) — never re-parses PDFs at runtime |
+| API key | **`GEMINI_API_KEY` env var** (server-side) | Users don't paste their own key; one shared backend key, lower friction |
+| Frontend | **Vite static build** served from Vercel CDN | Sub-100ms globally |
+
+The current code re-parses PDFs with pdfplumber on every cold start (~5–10s). That's the #1 latency killer in a serverless context. Pre-building the index removes it.
+
+## Step-by-step
+
+### 1. Restructure for Vercel
+Vercel expects:
+```
+rag/
+├── api/
+│   └── index.py          # FastAPI entrypoint (exports `app`)
+├── backend/
+│   ├── rag_engine.py     # existing
+│   └── index.json        # NEW: pre-built TF-IDF index
+├── public/assets/*.pdf
+├── scripts/
+│   └── build_index.py    # NEW: builds index.json at deploy time
+├── src/                  # React app
+├── requirements.txt      # NEW: fastapi, pdfplumber, requests, pydantic
+├── vercel.json           # NEW: routes + region + build config
+└── package.json
+```
+
+### 2. Pre-build the index (`scripts/build_index.py`)
+Runs locally or in CI. Walks PDFs, builds the TF-IDF index, serializes vocab/idf/doc_tfs/documents to `backend/index.json`. Commit the JSON.
+
+### 3. Modify `rag_engine.py`
+Add `load_index(path)` and `save_index(path)` methods on `SimpleTFIDF` so cold starts hydrate from JSON instead of running pdfplumber.
+
+### 4. Create `api/index.py`
+```python
+from backend.main import app  # FastAPI instance
+```
+Vercel auto-detects the `app` symbol and serves it.
+
+### 5. Create `requirements.txt`
+```
+fastapi
+pdfplumber       # only needed if you ever re-index in prod; can drop
+requests
+pydantic
+python-dotenv
+```
+Dropping `pdfplumber` shrinks the function bundle significantly — only the builder script needs it.
+
+### 6. Create `vercel.json`
+```json
+{
+  "buildCommand": "npm run build",
+  "outputDirectory": "dist",
+  "functions": {
+    "api/index.py": { "memory": 1024, "maxDuration": 60 }
+  },
+  "regions": ["sin1"],
+  "rewrites": [
+    { "source": "/api/(.*)", "destination": "/api/index" }
+  ]
+}
+```
+
+### 7. Frontend tweaks
+- Remove the "Enter API Key" UI (or keep as override). Default flow uses server key.
+- `fetch('/api/query')` already works — Vercel routes it to the function.
+
+### 8. Deploy
+```
+cd C:\Users\admin\rag
+npm i -g vercel              # CLI not installed
+vercel login
+vercel link                  # link to new project
+vercel env add GEMINI_API_KEY   # paste once; available in prod
+python scripts/build_index.py   # builds backend/index.json
+vercel --prod
+```
+
+### 9. Performance tuning after first deploy
+- **Watch cold starts** in Vercel dashboard → Functions tab. With Fluid Compute, you should see <500ms p95 once warm.
+- **Cache Gemini responses** for identical queries via Vercel Runtime Cache or an in-memory LRU keyed on `(query, mode, model)` — same questions from different users return instantly.
+- **Drop relevance-filter parallel calls to Gemini** for low-latency mode — they fire 5 extra API calls per query. The TF-IDF top-5 is usually good enough; only run the filter when the user asks for higher quality.
+- **Use `gemini-2.5-flash-lite`** for query expansion (cheap, fast) and reserve `gemini-2.5-flash` or `pro` for final generation.
+
+### 10. Multi-user concurrency
+Fluid Compute handles this natively — one instance serves multiple concurrent requests on the same Python process, so the in-memory index is shared. No extra config needed. If you outgrow it, move the index to Vercel Edge Config or Upstash Redis.
+
+---
+
+Want me to implement steps 1–7 now (create the new files and modify the existing ones)? Once that's in place you can run step 8 yourself, since `vercel login` and `vercel --prod` are interactive and need your account.
+------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+Now the build script:
+
+Now update `main.py` to load the prebuilt index:
+
+Now the Vercel function entrypoint, requirements, vercel.json:
+
+Now build the index so it ships with the deploy:
+
+Add a `.vercelignore` to keep the function bundle slim:
+
+Soften the API-key prompt in the UI (server key is now the default path):
+
+Skipping preview verification — the only observable change since the last edit is a static label/placeholder swap (`"Enter Gemini API key"` → `"Server key used if blank"`), and the rest of the work is server-side wiring that only proves itself on Vercel. You'll exercise the full stack with `npx vercel --prod`.
+
+## Done — steps 1–7 implemented
+
+**New files:**
+- `api/index.py` — Vercel function entrypoint (imports FastAPI `app`)
+- `requirements.txt` — fastapi, pydantic, requests, python-dotenv (no pdfplumber → smaller bundle)
+- `vercel.json` — `sin1` region, 1024 MB / 60s function, `/api/*` rewrite
+- `.vercelignore` — keeps node_modules, scripts, pycache out of the bundle
+- `scripts/build_index.py` — built `backend/index.json` (455 KB, 93 pages indexed)
+
+**Modified:**
+- `backend/rag_engine.py` — `save_index`/`load_index` methods; `pdfplumber` import made lazy (only used by the build script)
+- `backend/main.py` — loads `index.json` on cold start; falls back to live PDF extraction only if missing; default model `gemini-2.5-flash`
+- `src/App.jsx` — API-key field now labeled optional
+
+## Before you deploy
+
+1. Add the server-side key:
+   ```
+   npx vercel env add GEMINI_API_KEY
+   ```
+   Paste your key; pick Production (and Preview if you want).
+
+2. First deploy:
+   ```
+   npx vercel --prod
+   ```
+
+3. If you ever change the PDFs in `public/assets/`, re-run `python scripts/build_index.py` and redeploy — the index is shipped, not built on Vercel.
+
+Expected cold start ~300–600 ms (JSON load), warm requests bottlenecked only by Gemini latency.
+-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+Two things:
+
+**1. Rotate that API key immediately.** You pasted what looks like a real key into chat. Treat it as compromised — go to https://aistudio.google.com/app/apikey and delete it, then create a new one.
+
+**2. The `vercel env add` syntax was wrong anyway.** The command is `vercel env add GEMINI_API_KEY` — it then prompts for the value on stdin so the secret never appears in your shell history. Don't pass the key as an argument.
+
+**3. Fix the PowerShell execution policy** (one-time, current user only — safe):
+```powershell
+Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned
+```
+Answer `Y` when prompted. This lets locally-installed npm scripts (`npx.ps1`, `vercel.ps1`, etc.) run, while still blocking unsigned scripts from the internet.
+
+Alternative if you don't want to change the policy: use `npx.cmd` instead of `npx`:
+```
+npx.cmd vercel env add GEMINI_API_KEY
+```
+
+**Then the correct flow:**
+```
+cd C:\Users\admin\rag
+npx vercel login
+npx vercel link
+npx vercel env add GEMINI_API_KEY
+# (paste the NEW key when prompted, select Production)
+npx vercel --prod
+```
