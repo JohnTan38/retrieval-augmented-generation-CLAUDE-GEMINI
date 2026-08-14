@@ -76,4 +76,4 @@ def _build_timestamp(manifest: object, documents_dir: Path) -> int:
         if not source_date_epoch.isascii() or not source_date_epoch.isdecimal():
             raise ValueError("SOURCE_DATE_EPOCH must be a non-negative integer")
         return int(source_date_epoch)
-    return max(int((documents_dir / document.filename).stat().st_mtime) for document in manifest.documents)
+    return 0

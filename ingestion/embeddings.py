@@ -87,10 +87,12 @@ class GoogleEmbedder:
         for start in range(0, len(text_list), self._batch_size):
             batch = text_list[start : start + self._batch_size]
             vectors.extend(self._embed_batch(batch))
+        normalize_embeddings(vectors)
         return vectors
 
     def _embed_batch(self, texts: list[str]) -> list[list[float]]:
-        for attempt in range(self._max_retries + 1):
+        attempt = 0
+        while True:
             try:
                 response = self._client.models.embed_content(
                     model=self.model,
@@ -112,7 +114,7 @@ class GoogleEmbedder:
                 if attempt >= self._max_retries or not _is_transient(error):
                     raise
                 self._sleep(_backoff_seconds(attempt))
-        raise AssertionError("unreachable")
+                attempt += 1
 
 
 def _validate_texts(texts: Sequence[str]) -> list[str]:

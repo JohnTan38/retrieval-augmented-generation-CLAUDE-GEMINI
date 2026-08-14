@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import math
+import sys
+import types
 
 import pytest
 
@@ -94,3 +96,45 @@ def test_google_embedder_does_not_retry_non_transient_failures() -> None:
     with pytest.raises(ClientFailure):
         GoogleEmbedder("key", client=type("Client", (), {"models": Models()})(), sleep=lambda _: None).embed_documents(["one"])
     assert calls == 1
+
+
+def test_google_embedder_validates_dimensions_across_batches() -> None:
+    class Models:
+        calls = 0
+        def embed_content(self, **_: object):
+            self.calls += 1
+            values = [1.0, 0.0] if self.calls == 1 else [1.0]
+            return type("Response", (), {"embeddings": [type("Embedding", (), {"values": values})()]})()
+    with pytest.raises(ValueError, match="dimensions"):
+        GoogleEmbedder("key", client=type("Client", (), {"models": Models()})(), batch_size=1).embed_documents(["one", "two"])
+
+
+@pytest.mark.parametrize("vectors", ["bad", [[True]], [["bad"]]])
+def test_normalize_embeddings_rejects_all_invalid_value_shapes(vectors) -> None:
+    with pytest.raises(ValueError):
+        normalize_embeddings(vectors)
+
+
+def test_google_embedder_constructs_official_client_without_network(monkeypatch) -> None:
+    captured = {}
+    class Client:
+        def __init__(self, **kwargs): captured.update(kwargs)
+    monkeypatch.setitem(sys.modules, "google", types.SimpleNamespace(genai=types.SimpleNamespace(Client=Client)))
+    GoogleEmbedder("key")
+    assert captured == {"api_key": "key"}
+
+
+def test_google_embedder_rejects_missing_values_and_long_text() -> None:
+    class Models:
+        def embed_content(self, **_): return type("Response", (), {"embeddings": [object()]})()
+    embedder = GoogleEmbedder("key", client=type("Client", (), {"models": Models()})())
+    with pytest.raises(ValueError, match="no values"):
+        embedder.embed_documents(["one"])
+    with pytest.raises(ValueError, match="maximum"):
+        embedder.embed_documents(["x" * 20_001])
+    with pytest.raises(ValueError, match="texts"):
+        embedder.embed_documents("one")
+    with pytest.raises(ValueError, match="model"):
+        GoogleEmbedder("key", model=" ")
+    with pytest.raises(ValueError, match="vectors"):
+        normalize_embeddings([[]])

@@ -209,9 +209,16 @@ def test_manifest_rejects_a_pdf_junction(write_manifest, tmp_path: Path):
             pytest.skip("Windows does not permit junction creation in this environment")
         pytest.fail(f"could not create test junction: {output}")
     _rewrite_manifest(manifest_path, [document])
-
-    with pytest.raises(ValueError, match="not a regular PDF file"):
-        load_manifest(manifest_path, documents_dir)
+    try:
+        with pytest.raises(ValueError, match="not a regular PDF file"):
+            load_manifest(manifest_path, documents_dir)
+    finally:
+        subprocess.run(
+            ["cmd.exe", "/c", "rmdir", str(junction)],
+            capture_output=True,
+            check=False,
+            text=True,
+        )
 
 
 def test_manifest_uses_a_single_immutable_pdf_snapshot(

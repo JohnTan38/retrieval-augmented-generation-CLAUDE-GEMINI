@@ -6,7 +6,9 @@ from collections.abc import Mapping
 import gzip
 import json
 import math
+import os
 from pathlib import Path
+import tempfile
 
 from pydantic import BaseModel, ConfigDict, Field, StrictFloat, StrictInt, StrictStr, field_validator, model_validator
 
@@ -16,7 +18,7 @@ from ingestion.models import CorpusDocument
 class ArtifactChunk(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    chunk_id: StrictStr = Field(pattern=r"[0-9a-f]{24}")
+    chunk_id: StrictStr = Field(pattern=r"^[0-9a-f]{24}$")
     document_id: StrictStr = Field(min_length=1)
     filename: StrictStr = Field(min_length=1)
     semester: StrictStr = Field(min_length=1)
@@ -95,7 +97,8 @@ class IndexArtifact(BaseModel):
             if chunk.document_id not in document_ids:
                 raise ValueError("chunk document is missing from artifact documents")
             document = next(document for document in self.documents if document.document_id == chunk.document_id)
-            if chunk.filename != document.filename or chunk.semester != document.semester or chunk.page > document.pages:
+            if (chunk.filename != document.filename or chunk.semester != document.semester
+                    or chunk.page > document.pages or chunk.topics != document.topics):
                 raise ValueError("chunk metadata does not match its document")
             if len(chunk.vector) != self.embedding_dimensions:
                 raise ValueError("chunk vector dimensions must match artifact")
@@ -108,15 +111,27 @@ def write_artifact(path: Path, artifact: IndexArtifact) -> None:
         artifact.model_dump(mode="json"), sort_keys=True, separators=(",", ":"), ensure_ascii=False
     ).encode("utf-8")
     path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("wb") as raw:
-        with gzip.GzipFile(filename="", mode="wb", fileobj=raw, mtime=0) as compressed:
-            compressed.write(payload)
+    temporary_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(mode="wb", dir=path.parent, prefix=f".{path.name}.", suffix=".tmp", delete=False) as raw:
+            temporary_path = Path(raw.name)
+            with gzip.GzipFile(filename="", mode="wb", fileobj=raw, mtime=0) as compressed:
+                compressed.write(payload)
+            raw.flush()
+            os.fsync(raw.fileno())
+        os.replace(temporary_path, path)
+    finally:
+        if temporary_path is not None:
+            temporary_path.unlink(missing_ok=True)
 
 
 def read_artifact(path: Path) -> IndexArtifact:
-    with gzip.open(path, "rt", encoding="utf-8") as compressed:
-        try:
+    try:
+        with gzip.open(path, "rt", encoding="utf-8") as compressed:
             payload: Mapping[str, object] = json.load(compressed)
-        except json.JSONDecodeError as error:
-            raise ValueError("index artifact must contain JSON") from error
-    return IndexArtifact.model_validate(payload)
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise ValueError("index artifact must be a valid UTF-8 gzip JSON document") from error
+    try:
+        return IndexArtifact.model_validate(payload)
+    except ValueError as error:
+        raise ValueError("index artifact violates the schema") from error

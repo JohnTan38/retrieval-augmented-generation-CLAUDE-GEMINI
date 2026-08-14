@@ -60,6 +60,37 @@ def test_build_timestamp_uses_valid_source_date_epoch_or_canonical_mtime(monkeyp
         _build_timestamp(manifest, ROOT / "public" / "documents")
 
 
+def test_build_timestamp_uses_stable_zero_without_source_date_epoch(monkeypatch) -> None:
+    monkeypatch.delenv("SOURCE_DATE_EPOCH", raising=False)
+    manifest = type("Manifest", (), {"documents": []})()
+    assert _build_timestamp(manifest, ROOT) == 0
+
+
+def test_cli_prints_only_safe_metadata_and_clears_key(monkeypatch, capsys) -> None:
+    import ingestion.__main__ as cli
+    artifact = type("Artifact", (), {"corpus_version": "v", "embedding_model": "m", "embedding_dimensions": 2, "documents": [type("Document", (), {"pages": 1})()], "chunks": [object()]})()
+    monkeypatch.setenv("GEMINI_API_KEY", "secret")
+    monkeypatch.setattr("sys.argv", ["ingestion", "--manifest", "m", "--documents", "d", "--output", "o"])
+    monkeypatch.setattr(cli, "GoogleEmbedder", lambda key: object())
+    monkeypatch.setattr(cli, "build_index", lambda *args: artifact)
+    cli.main()
+    output = capsys.readouterr().out
+    assert "secret" not in output
+    assert "corpus_version=v" in output
+    assert "GEMINI_API_KEY" not in __import__("os").environ
+
+
+def test_build_index_rejects_a_valid_manifest_that_yields_no_chunks(monkeypatch) -> None:
+    import ingestion.indexer as indexer
+    document = type("Document", (), {"filename": "doc.pdf", "document_id": "doc"})()
+    manifest = type("Manifest", (), {"documents": [document], "corpus_version": "v"})()
+    monkeypatch.setattr(indexer, "load_manifest", lambda *_: manifest)
+    monkeypatch.setattr(indexer, "extract_pages", lambda *_: [])
+    monkeypatch.setattr(indexer, "chunk_pages", lambda *_args, **_kwargs: [])
+    with pytest.raises(ValueError, match="no chunks"):
+        indexer.build_index(Path("m"), Path("d"), Path("o"), FakeEmbedder())
+
+
 def test_build_index_rejects_embedder_response_count_mismatch() -> None:
     class BadEmbedder:
         model = "bad"
