@@ -1,0 +1,99 @@
+from __future__ import annotations
+
+from pathlib import Path
+import threading
+
+import pytest
+
+from ingestion.artifact import read_artifact, write_artifact
+
+from backend.index_store import IndexStore
+
+
+def test_loads_validated_artifact_once_and_exposes_precomputed_lookups(artifact_path: Path) -> None:
+    first = IndexStore.load(artifact_path)
+    second = IndexStore.load(artifact_path)
+
+    assert first is second
+    assert len(first.chunks_by_id) == 93
+    assert len(first.documents_by_id) == 3
+    assert len(first.vectors) == len(first.bm25_term_frequencies) == 93
+    assert len(first.fingerprint) == 64
+
+
+def test_load_cache_is_thread_safe(artifact_path: Path) -> None:
+    stores = []
+    errors = []
+
+    def load() -> None:
+        try:
+            stores.append(IndexStore.load(artifact_path))
+        except Exception as error:  # pragma: no cover - asserted after joining
+            errors.append(error)
+
+    threads = [threading.Thread(target=load) for _ in range(8)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert not errors
+    assert len({id(store) for store in stores}) == 1
+
+
+def test_detects_changed_or_corrupt_artifact_at_the_same_path(artifact_path: Path) -> None:
+    original = IndexStore.load(artifact_path)
+    artifact = read_artifact(artifact_path)
+    changed = artifact.model_copy(update={"corpus_version": "swk501-v2"})
+    write_artifact(artifact_path, changed)
+
+    replacement = IndexStore.load(artifact_path)
+    assert replacement is not original
+    assert replacement.corpus_version == "swk501-v2"
+
+    artifact_path.write_bytes(b"not a gzip artifact")
+    with pytest.raises(ValueError, match="index artifact"):
+        IndexStore.load(artifact_path)
+
+
+def test_rejects_missing_artifact_and_has_a_test_only_reset_hook(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="unavailable"):
+        IndexStore.load(tmp_path)
+
+    IndexStore.reset_cache_for_tests()
+    assert IndexStore.cache_size_for_tests() == 0
+
+
+def test_cache_is_bounded_and_revalidates_drift_while_loading(artifact_path: Path, tmp_path: Path, monkeypatch) -> None:
+    original_bytes = artifact_path.read_bytes()
+    for index in range(9):
+        path = tmp_path / f"copy-{index}.json.gz"
+        path.write_bytes(original_bytes)
+        IndexStore.load(path)
+    assert IndexStore.cache_size_for_tests() == 8
+
+    from backend import index_store as module
+
+    actual = module._file_sha256(artifact_path)
+    fingerprints = iter((actual, "changed-during-load"))
+    IndexStore.reset_cache_for_tests()
+    monkeypatch.setattr(module, "_file_sha256", lambda _: next(fingerprints))
+    with pytest.raises(ValueError, match="invalid"):
+        IndexStore.load(artifact_path)
+
+
+def test_store_rejects_constructed_artifact_integrity_corruption(artifact_path: Path) -> None:
+    artifact = read_artifact(artifact_path)
+    invalid_cases = [
+        artifact.model_copy(update={"schema_version": 2}),
+        artifact.model_copy(update={"documents": ()}),
+        artifact.model_copy(update={"documents": artifact.documents + (artifact.documents[0],)}),
+        artifact.model_copy(update={"documents": (artifact.documents[0].model_copy(update={"download_url": "/documents/other.pdf"}),) + artifact.documents[1:]}),
+        artifact.model_copy(update={"bm25": artifact.bm25.model_copy(update={"document_lengths": artifact.bm25.document_lengths[:-1]})}),
+        artifact.model_copy(update={"chunks": artifact.chunks + (artifact.chunks[0],)}),
+        artifact.model_copy(update={"chunks": (artifact.chunks[0].model_copy(update={"document_id": "missing"}),) + artifact.chunks[1:]}),
+        artifact.model_copy(update={"chunks": (artifact.chunks[0].model_copy(update={"filename": "other.pdf"}),) + artifact.chunks[1:]}),
+    ]
+    for invalid in invalid_cases:
+        with pytest.raises(ValueError):
+            IndexStore._validate_artifact(invalid)

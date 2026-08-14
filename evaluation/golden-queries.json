@@ -1,0 +1,9 @@
+[
+  {"id":"max-ppct","query":"Apply Bronfenbrenner PPCT to Max's adolescent delinquency","expected_documents":["jan-2025"],"expected_topic":"Max adolescent delinquency case / PPCT","expected_page_range":[7,7]},
+  {"id":"tan-arnett","query":"How does Arnett emerging adulthood explain the Tan family?","expected_documents":["jul-2025"],"expected_topic":"Tan family / emerging adulthood","expected_page_range":[8,12]},
+  {"id":"multiple-intelligence","query":"Compare Gardner, Sternberg and traditional IQ","expected_documents":["jul-2025"],"expected_topic":"multiple intelligence","expected_page_range":[16,21]},
+  {"id":"emotion-coaching","query":"Contrast emotion coaching and emotion dismissing for a two-year-old","expected_documents":["jan-2026"],"expected_topic":"emotion coaching","expected_page_range":[7,9]},
+  {"id":"marcia","query":"Explain Marcia identity status theory","expected_documents":["jan-2026"],"expected_topic":"Marcia identity status","expected_page_range":[12,15]},
+  {"id":"cognitive-ageing","query":"Distinguish cognitive mechanics and pragmatics in ageing","expected_documents":["jan-2026"],"expected_topic":"cognitive ageing","expected_page_range":[16,16]},
+  {"id":"baltes-soc","query":"Apply Baltes selection optimisation compensation to active ageing","expected_documents":["jan-2026"],"expected_topic":"Baltes selective optimisation with compensation","expected_page_range":[17,20]}
+]
