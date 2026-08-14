@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+import ingestion.chunker as chunker
 from ingestion.chunker import chunk_pages
 from ingestion.manifest import load_manifest
 from ingestion.models import ChunkRecord, CorpusDocument, PageText
@@ -159,12 +160,18 @@ def test_real_corpus_adjacent_chunks_never_exceed_half_predecessor_overlap():
     for document in manifest.documents:
         pages = extract_pages(ROOT / "public" / "documents" / document.filename, document.document_id)
         chunks = chunk_pages(document, pages, corpus_version=manifest.corpus_version)
-        for previous, current in zip(chunks, chunks[1:]):
-            if previous.page == current.page:
-                assert _positional_overlap(previous.text, current.text) <= len(
-                    previous.text.split()
-                ) // 2
-                assert previous.text != current.text
+        for page in pages:
+            spans = chunker._chunk_page_spans(page.text, 650, 90)
+            page_chunks = [chunk for chunk in chunks if chunk.page == page.page]
+
+            _assert_source_span_invariants(spans, len(page.text.split()))
+            assert [chunk.text for chunk in page_chunks] == [
+                " ".join(page.text.split()[span.start : span.end]) for span in spans
+            ]
+            assert all(
+                previous.text != current.text
+                for previous, current in zip(page_chunks, page_chunks[1:])
+            )
 
 
 def test_chunking_prefers_paragraph_then_sentence_boundaries(document: CorpusDocument):
@@ -230,6 +237,90 @@ def test_chunking_caps_extreme_overlap_to_avoid_near_identical_chunks(
     chunks = chunk_pages(document, [page], target_words=10, overlap_words=9)
 
     assert chunks[1].text.split()[0] == "word5"
+
+
+@pytest.mark.parametrize(
+    ("tokens", "target_words", "overlap_words"),
+    [
+        (["same"] * 30, 10, 0),
+        (["same"] * 30, 10, 9),
+        (["red", "blue"] * 20, 10, 0),
+        (["red", "blue"] * 20, 10, 9),
+    ],
+)
+def test_repeated_content_keeps_distinct_adjacent_spans_and_stable_ids(
+    document: CorpusDocument,
+    tokens: list[str],
+    target_words: int,
+    overlap_words: int,
+):
+    page = PageText(document_id="test-document", page=1, text=" ".join(tokens))
+
+    first = chunk_pages(
+        document, [page], target_words=target_words, overlap_words=overlap_words
+    )
+    second = chunk_pages(
+        document, [page], target_words=target_words, overlap_words=overlap_words
+    )
+
+    assert all(previous.text != current.text for previous, current in zip(first, first[1:]))
+    assert [chunk.chunk_id for chunk in first] == [chunk.chunk_id for chunk in second]
+
+    spans = chunker._chunk_page_spans(
+        page.text, target_words, min(overlap_words, target_words // 2)
+    )
+    _assert_source_span_invariants(spans, len(tokens))
+    assert [chunk.text for chunk in first] == [
+        " ".join(tokens[span.start : span.end]) for span in spans
+    ]
+
+
+def test_final_repeated_candidate_coalesces_without_dropping_source_positions(
+    document: CorpusDocument,
+):
+    tokens = ["same"] * 20
+    page = PageText(document_id="test-document", page=1, text=" ".join(tokens))
+
+    chunks = chunk_pages(document, [page], target_words=10, overlap_words=0)
+    spans = chunker._chunk_page_spans(page.text, 10, 0)
+
+    assert [chunk.text for chunk in chunks] == [" ".join(tokens)]
+    _assert_source_span_invariants(spans, len(tokens))
+
+
+def test_repeated_final_tail_coalesces_equal_spans_recursively():
+    spans = [
+        chunker._ChunkSpan(0, 2),
+        chunker._ChunkSpan(2, 3),
+        chunker._ChunkSpan(3, 4),
+    ]
+
+    chunker._coalesce_equal_tail(spans, ["same"] * 4)
+
+    assert spans == [chunker._ChunkSpan(0, 4)]
+
+
+@pytest.mark.parametrize("pattern", [("same",), ("red", "blue")])
+def test_repeated_content_span_property_preserves_coverage_without_equal_neighbors(
+    pattern: tuple[str, ...],
+):
+    for source_word_count in range(2, 41):
+        tokens = (pattern * ((source_word_count + len(pattern) - 1) // len(pattern)))[
+            :source_word_count
+        ]
+        text = " ".join(tokens)
+        for target_words in range(1, 11):
+            for overlap_words in range(target_words):
+                spans = chunker._chunk_page_spans(
+                    text, target_words, min(overlap_words, target_words // 2)
+                )
+
+                _assert_source_span_invariants(spans, source_word_count)
+                assert all(
+                    " ".join(tokens[previous.start : previous.end])
+                    != " ".join(tokens[current.start : current.end])
+                    for previous, current in zip(spans, spans[1:])
+                )
 
 
 @pytest.mark.parametrize(
@@ -342,3 +433,15 @@ def _positional_overlap(previous_text: str, current_text: str) -> int:
         if previous_words[-overlap:] == current_words[:overlap]:
             return overlap
     return 0
+
+
+def _assert_source_span_invariants(spans: list[object], source_word_count: int) -> None:
+    assert spans[0].start == 0
+    assert spans[-1].end == source_word_count
+    covered_positions = set()
+    for span in spans:
+        covered_positions.update(range(span.start, span.end))
+    assert covered_positions == set(range(source_word_count))
+    for previous, current in zip(spans, spans[1:]):
+        assert current.end > previous.end
+        assert previous.end - current.start <= (previous.end - previous.start) // 2
