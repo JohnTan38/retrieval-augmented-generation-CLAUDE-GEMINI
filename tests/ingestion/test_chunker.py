@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from ingestion.chunker import chunk_pages
+from ingestion.manifest import load_manifest
 from ingestion.models import ChunkRecord, CorpusDocument, PageText
 from ingestion.parser import extract_pages
 
@@ -20,7 +21,7 @@ def document() -> CorpusDocument:
         filename="test-document.pdf",
         title="Test document",
         semester="Test semester",
-        pages=27,
+        pages=1,
         sha256="0" * 64,
         download_url="/documents/test-document.pdf",
         topics=("testing", "chunking"),
@@ -111,6 +112,61 @@ def test_adjacent_chunks_overlap_without_being_duplicates(
     assert chunks[0].text != chunks[1].text
 
 
+@pytest.mark.parametrize(
+    ("target_words", "overlap_words", "word_count"),
+    [(10, 9, 30), (120, 90, 275), (120, 20, 320)],
+)
+def test_adjacent_chunks_never_overlap_more_than_half_the_predecessor(
+    document: CorpusDocument, target_words: int, overlap_words: int, word_count: int
+):
+    page = PageText(
+        document_id="test-document",
+        page=1,
+        text=" ".join(f"word{number}" for number in range(word_count)),
+    )
+
+    chunks = chunk_pages(
+        document, [page], target_words=target_words, overlap_words=overlap_words
+    )
+
+    for previous, current in zip(chunks, chunks[1:]):
+        assert _positional_overlap(previous.text, current.text) <= len(
+            previous.text.split()
+        ) // 2
+        assert previous.text != current.text
+
+
+def test_semantic_boundary_uses_dynamic_overlap_from_the_predecessor(
+    document: CorpusDocument,
+):
+    first_paragraph = " ".join(f"word{number}" for number in range(95))
+    second_paragraph = " ".join(f"word{number}" for number in range(95, 275))
+    page = PageText(
+        document_id="test-document",
+        page=1,
+        text=f"{first_paragraph}\n\n{second_paragraph}",
+    )
+
+    chunks = chunk_pages(document, [page], target_words=120, overlap_words=90)
+
+    assert chunks[0].text.split()[-1] == "word94"
+    assert chunks[1].text.split()[0] == "word48"
+
+
+def test_real_corpus_adjacent_chunks_never_exceed_half_predecessor_overlap():
+    manifest = load_manifest(ROOT / "data" / "corpus-manifest.json", ROOT / "public" / "documents")
+
+    for document in manifest.documents:
+        pages = extract_pages(ROOT / "public" / "documents" / document.filename, document.document_id)
+        chunks = chunk_pages(document, pages, corpus_version=manifest.corpus_version)
+        for previous, current in zip(chunks, chunks[1:]):
+            if previous.page == current.page:
+                assert _positional_overlap(previous.text, current.text) <= len(
+                    previous.text.split()
+                ) // 2
+                assert previous.text != current.text
+
+
 def test_chunking_prefers_paragraph_then_sentence_boundaries(document: CorpusDocument):
     first_paragraph = " ".join(f"paragraph{number}" for number in range(40))
     second_sentence = " ".join(f"sentence{number}" for number in range(40)) + "."
@@ -125,6 +181,20 @@ def test_chunking_prefers_paragraph_then_sentence_boundaries(document: CorpusDoc
 
     assert chunks[0].text.split()[-1] == "paragraph39"
     assert chunks[1].text.split()[-1] == "sentence39."
+
+
+def test_chunking_recognizes_terminal_punctuation_before_closing_quotes(document: CorpusDocument):
+    first_sentence = " ".join(f"first{number}" for number in range(20)) + '.)"'
+    second_sentence = " ".join(f"second{number}" for number in range(20)) + "."
+    page = PageText(
+        document_id="test-document",
+        page=1,
+        text=f"{first_sentence} {second_sentence}",
+    )
+
+    chunks = chunk_pages(document, [page], target_words=30, overlap_words=5)
+
+    assert chunks[0].text.split()[-1] == 'first19.)"'
 
 
 def test_chunking_falls_back_to_word_windows(document: CorpusDocument, long_page: PageText):
@@ -185,6 +255,7 @@ def test_chunking_rejects_invalid_window_parameters(
             PageText(document_id="test-document", page=1, text="first"),
         ],
         [PageText(document_id="test-document", page=28, text="out of range")],
+        [PageText.model_construct(document_id="test-document", page=0, text="zero")],
         [PageText.model_construct(document_id="test-document", page=1, text=" ")],
         ["not-a-page"],  # type: ignore[list-item]
     ],
@@ -205,6 +276,36 @@ def test_chunking_rejects_a_string_instead_of_a_page_sequence(document: CorpusDo
 def test_chunking_rejects_non_sequence_pages(document: CorpusDocument, pages: object):
     with pytest.raises(ValueError, match="pages"):
         chunk_pages(document, pages)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    ("pages", "page_count"),
+    [
+        ([PageText(document_id="test-document", page=2, text="second")], 2),
+        (
+            [
+                PageText(document_id="test-document", page=1, text="first"),
+                PageText(document_id="test-document", page=3, text="third"),
+            ],
+            3,
+        ),
+        ([PageText(document_id="test-document", page=1, text="first")], 2),
+    ],
+)
+def test_chunking_requires_contiguous_complete_document_pages(
+    document: CorpusDocument, pages: list[PageText], page_count: int
+):
+    incomplete_document = document.model_copy(update={"pages": page_count})
+
+    with pytest.raises(ValueError, match="contiguous"):
+        chunk_pages(incomplete_document, pages)
+
+
+def test_chunking_rejects_a_non_document_at_the_public_boundary():
+    page = PageText(document_id="test-document", page=1, text="source text")
+
+    with pytest.raises(ValueError, match="document"):
+        chunk_pages("not-a-document", [page])  # type: ignore[arg-type]
 
 
 def test_chunk_record_requires_strict_nonblank_metadata():
@@ -232,3 +333,12 @@ def test_chunk_record_requires_strict_nonblank_metadata():
         invalid = {**valid, field: value}
         with pytest.raises(ValueError):
             ChunkRecord(**invalid)
+
+
+def _positional_overlap(previous_text: str, current_text: str) -> int:
+    previous_words = previous_text.split()
+    current_words = current_text.split()
+    for overlap in range(min(len(previous_words), len(current_words)), 0, -1):
+        if previous_words[-overlap:] == current_words[:overlap]:
+            return overlap
+    return 0

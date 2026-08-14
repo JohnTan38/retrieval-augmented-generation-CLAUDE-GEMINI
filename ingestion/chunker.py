@@ -12,6 +12,7 @@ from ingestion.models import ChunkRecord, CorpusDocument, PageText
 DEFAULT_CORPUS_VERSION = "swk501-2026-01-v1"
 _WORD_PATTERN = re.compile(r"\S+")
 _PARAGRAPH_BREAK_PATTERN = re.compile(r"\n[^\S\r\n]*\n+")
+_SENTENCE_ENDING_PATTERN = re.compile(r"[.!?][)\]}\"'”’]*$")
 
 
 def chunk_pages(
@@ -23,6 +24,7 @@ def chunk_pages(
     corpus_version: str = DEFAULT_CORPUS_VERSION,
 ) -> list[ChunkRecord]:
     """Return stable semantic chunks without crossing a PDF page boundary."""
+    _validate_document(document)
     _validate_parameters(target_words, overlap_words, corpus_version)
     page_list = _validate_pages(document, pages)
     effective_overlap = min(overlap_words, target_words // 2)
@@ -39,6 +41,11 @@ def chunk_pages(
             )
         )
     return chunks
+
+
+def _validate_document(document: object) -> None:
+    if not isinstance(document, CorpusDocument):
+        raise ValueError("document must be a CorpusDocument")
 
 
 def _validate_parameters(
@@ -66,6 +73,7 @@ def _validate_pages(document: CorpusDocument, pages: Sequence[PageText]) -> list
         raise ValueError("pages must not be empty")
 
     previous_page = 0
+    expected_page = 1
     for page in page_list:
         if not isinstance(page, PageText):
             raise ValueError("pages must contain PageText values")
@@ -77,9 +85,14 @@ def _validate_pages(document: CorpusDocument, pages: Sequence[PageText]) -> list
             raise ValueError("pages must have unique, ordered positive page numbers")
         if page.page > document.pages or page.document_id != document.document_id:
             raise ValueError("pages must belong to the document")
+        if page.page != expected_page:
+            raise ValueError("pages must be contiguous from 1 through document.pages")
         if not isinstance(page.text, str) or not page.text.strip():
             raise ValueError("pages must contain nonblank text")
         previous_page = page.page
+        expected_page += 1
+    if expected_page != document.pages + 1:
+        raise ValueError("pages must be contiguous from 1 through document.pages")
     return page_list
 
 
@@ -95,7 +108,9 @@ def _chunk_page(
     words = [match.group() for match in word_matches]
     paragraph_boundaries = _paragraph_boundaries(page.text, word_matches)
     sentence_boundaries = [
-        position for position, word in enumerate(words, start=1) if word.endswith((".", "!", "?"))
+        position
+        for position, word in enumerate(words, start=1)
+        if _SENTENCE_ENDING_PATTERN.search(word)
     ]
     records: list[ChunkRecord] = []
     start = 0
@@ -109,7 +124,8 @@ def _chunk_page(
             paragraph_boundaries,
             sentence_boundaries,
         )
-        if end < len(words) and len(words) - end <= overlap_words:
+        next_overlap = min(overlap_words, (end - start) // 2)
+        if end < len(words) and len(words) - end <= next_overlap:
             end = len(words)
         text = " ".join(words[start:end])
         ordinal = len(records) + 1
@@ -124,7 +140,7 @@ def _chunk_page(
                 topics=document.topics,
             )
         )
-        start = end if end == len(words) else end - overlap_words
+        start = end if end == len(words) else end - next_overlap
     return records
 
 
