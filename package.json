@@ -1,36 +1,48 @@
 {
-    "name":  "singapore-social-services-rag",
-    "private":  true,
-    "version":  "1.0.0",
-    "type":  "module",
-    "scripts":  {
-                    "dev:frontend":  "vite",
-                    "dev:backend":  "python backend/main.py",
-                    "dev":  "concurrently \"npm run dev:backend\" \"npm run dev:frontend\"",
-                    "build":  "vite build",
-                    "preview":  "vite preview",
-                    "start":  "npm run dev",
-                    "test":  "vitest run",
-                    "test:coverage":  "vitest run --coverage",
-                    "typecheck":  "tsc --noEmit"
-                },
-    "dependencies":  {
-                         "react":  "^18.3.1",
-                         "react-dom":  "^18.3.1"
-                     },
-    "devDependencies":  {
-                            "@types/react":  "^18.3.3",
-                            "@types/react-dom":  "^18.3.0",
-                            "@vitejs/plugin-react":  "^4.3.1",
-                            "concurrently":  "^8.2.2",
-                            "vite":  "^5.3.1",
-                            "@playwright/test":  "^1.49.1",
-                            "@testing-library/jest-dom":  "^6.6.3",
-                            "@testing-library/react":  "^16.1.0",
-                            "@testing-library/user-event":  "^14.5.2",
-                            "jsdom":  "^25.0.1",
-                            "typescript":  "^5.7.2",
-                            "vitest":  "^2.1.8",
-                            "@vitest/coverage-v8":  "^2.1.8"
-                        }
+  "name": "singapore-social-services-rag",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "eslint .",
+    "typecheck": "next typegen && tsc --noEmit",
+    "test": "vitest run",
+    "test:coverage": "vitest run --coverage",
+    "test:e2e": "playwright test",
+    "test:python": "python -m pytest -q",
+    "test:retrieval": "python -m pytest -q -m retrieval",
+    "test:quality": "npm run typecheck && npm run lint && npm run test:coverage",
+    "check": "npm run typecheck && npm run lint && npm test"
+  },
+  "dependencies": {
+    "@tailwindcss/postcss": "^4.3.3",
+    "lucide-react": "^1.31.0",
+    "motion": "^13.1.0",
+    "next": "^16.3.1",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
+    "react-markdown": "^10.1.0",
+    "rehype-sanitize": "^6.0.0",
+    "remark-gfm": "^4.0.1",
+    "tailwindcss": "^4.3.3"
+  },
+  "devDependencies": {
+    "@axe-core/playwright": "^4.13.0",
+    "@playwright/test": "^1.62.1",
+    "@testing-library/jest-dom": "^6.9.1",
+    "@testing-library/react": "^16.3.2",
+    "@testing-library/user-event": "^14.6.4",
+    "@types/node": "^26.2.0",
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.4",
+    "@vitest/coverage-v8": "^2.1.9",
+    "eslint": "^9.39.5",
+    "eslint-config-next": "^16.3.1",
+    "jsdom": "^25.0.1",
+    "typescript": "^5.9.3",
+    "vitest": "^2.1.9"
+  }
 }
