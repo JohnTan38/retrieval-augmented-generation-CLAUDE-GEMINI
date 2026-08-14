@@ -1,14 +1,18 @@
 from __future__ import annotations
 
+import errno
 import hashlib
 import json
+import os
 from pathlib import Path
+import subprocess
 
 import pytest
 from pydantic import ValidationError
 
+import ingestion.manifest as manifest_module
 from ingestion.manifest import load_manifest
-from ingestion.models import CorpusDocument
+from ingestion.models import CorpusDocument, CorpusManifest
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -142,6 +146,145 @@ def test_manifest_rejects_a_non_pdf_after_checksum_validation(write_manifest):
         load_manifest(manifest_path, documents_dir)
 
 
+def test_manifest_rejects_an_unexpected_pdf_directory(write_manifest, write_pdf):
+    document = _document("expected.pdf", "expected")
+    manifest_path, documents_dir = write_manifest([document])
+    document["sha256"] = write_pdf(documents_dir / "expected.pdf")
+    (documents_dir / "unexpected.pdf").mkdir()
+    _rewrite_manifest(manifest_path, [document])
+
+    with pytest.raises(ValueError, match="unexpected PDFs"):
+        load_manifest(manifest_path, documents_dir)
+
+
+def test_manifest_rejects_an_expected_pdf_directory(write_manifest):
+    document = _document("expected.pdf", "expected")
+    manifest_path, documents_dir = write_manifest([document])
+    (documents_dir / "expected.pdf").mkdir()
+
+    with pytest.raises(ValueError, match="not a regular PDF file"):
+        load_manifest(manifest_path, documents_dir)
+
+
+def test_manifest_rejects_a_pdf_symlink(write_manifest, write_pdf, tmp_path: Path):
+    document = _document("expected.pdf", "expected")
+    manifest_path, documents_dir = write_manifest([document])
+    target = tmp_path / "target.pdf"
+    document["sha256"] = write_pdf(target)
+    _create_symlink(documents_dir / "expected.pdf", target)
+    _rewrite_manifest(manifest_path, [document])
+
+    with pytest.raises(ValueError, match="not a regular PDF file"):
+        load_manifest(manifest_path, documents_dir)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows junctions are reparse points")
+def test_manifest_rejects_a_pdf_junction(write_manifest, tmp_path: Path):
+    document = _document("expected.pdf", "expected")
+    manifest_path, documents_dir = write_manifest([document])
+    target = tmp_path / "junction-target"
+    target.mkdir()
+    junction = documents_dir / "expected.pdf"
+    result = subprocess.run(
+        ["cmd.exe", "/c", "mklink", "/J", str(junction), str(target)],
+        capture_output=True,
+        check=False,
+        text=True,
+    )
+    if result.returncode:
+        output = f"{result.stdout}\n{result.stderr}".lower()
+        if "privilege" in output or "access is denied" in output:
+            pytest.skip("Windows does not permit junction creation in this environment")
+        pytest.fail(f"could not create test junction: {output}")
+    _rewrite_manifest(manifest_path, [document])
+
+    with pytest.raises(ValueError, match="not a regular PDF file"):
+        load_manifest(manifest_path, documents_dir)
+
+
+def test_manifest_uses_a_single_immutable_pdf_snapshot(
+    write_manifest, write_pdf, monkeypatch
+):
+    document = _document("expected.pdf", "expected")
+    manifest_path, documents_dir = write_manifest([document])
+    pdf_path = documents_dir / "expected.pdf"
+    document["sha256"] = write_pdf(pdf_path)
+    _rewrite_manifest(manifest_path, [document])
+    original_bytes = pdf_path.read_bytes()
+    original_open = manifest_module.pymupdf.open
+    open_calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
+
+    def mutate_path_before_open(*args, **kwargs):
+        open_calls.append((args, kwargs))
+        if args and args[0] == pdf_path:
+            pdf_path.write_bytes(b"replacement is not a PDF")
+        return original_open(*args, **kwargs)
+
+    monkeypatch.setattr(manifest_module.pymupdf, "open", mutate_path_before_open)
+
+    manifest = load_manifest(manifest_path, documents_dir)
+
+    assert manifest.documents[0].document_id == "expected"
+    assert pdf_path.read_bytes() == original_bytes
+    assert open_calls == [((), {"stream": original_bytes, "filetype": "pdf"})]
+
+
+@pytest.mark.parametrize("schema_version", [0, 2, "1", True])
+def test_manifest_model_accepts_only_strict_schema_version_one(schema_version: object):
+    payload = _manifest_payload([_document("safe.pdf", "safe")])
+    payload["schema_version"] = schema_version
+
+    with pytest.raises(ValidationError):
+        CorpusManifest.model_validate(payload)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("document_id", "   "),
+        ("title", "   "),
+        ("semester", "   "),
+        ("document_id", 1),
+        ("filename", 1),
+        ("title", 1),
+        ("semester", 1),
+        ("sha256", 1),
+        ("download_url", 1),
+        ("topics", ["testing", 1]),
+        ("pages", "1"),
+    ],
+)
+def test_document_model_requires_nonblank_strict_metadata(field: str, value: object):
+    payload = _document("safe.pdf", "safe")
+    payload[field] = value
+
+    with pytest.raises(ValidationError):
+        CorpusDocument.model_validate(payload)
+
+
+def test_manifest_model_requires_nonblank_corpus_version():
+    payload = _manifest_payload([_document("safe.pdf", "safe")])
+    payload["corpus_version"] = "   "
+
+    with pytest.raises(ValidationError):
+        CorpusManifest.model_validate(payload)
+
+
+def test_models_forbid_extras_and_an_empty_manifest():
+    document = _document("safe.pdf", "safe")
+    document["unexpected"] = "value"
+    with pytest.raises(ValidationError):
+        CorpusDocument.model_validate(document)
+
+    extra_manifest = _manifest_payload([_document("safe.pdf", "safe")])
+    extra_manifest["unexpected"] = "value"
+    with pytest.raises(ValidationError):
+        CorpusManifest.model_validate(extra_manifest)
+
+    with pytest.raises(ValidationError):
+        CorpusManifest.model_validate(_manifest_payload([]))
+
+
 @pytest.mark.parametrize(
     ("field", "value", "message"),
     [
@@ -176,13 +319,21 @@ def _document(filename: str, document_id: str, pages: int = 1) -> dict[str, obje
 
 
 def _rewrite_manifest(manifest_path: Path, documents: list[dict[str, object]]) -> None:
-    manifest_path.write_text(
-        json.dumps(
-            {
-                "schema_version": 1,
-                "corpus_version": "test-corpus",
-                "documents": documents,
-            }
-        ),
-        encoding="utf-8",
-    )
+    manifest_path.write_text(json.dumps(_manifest_payload(documents)), encoding="utf-8")
+
+
+def _manifest_payload(documents: list[dict[str, object]]) -> dict[str, object]:
+    return {
+        "schema_version": 1,
+        "corpus_version": "test-corpus",
+        "documents": documents,
+    }
+
+
+def _create_symlink(link: Path, target: Path) -> None:
+    try:
+        link.symlink_to(target)
+    except OSError as error:
+        if error.errno in {errno.EACCES, errno.EPERM} or getattr(error, "winerror", None) == 1314:
+            pytest.skip("the operating system does not permit symlink creation")
+        raise

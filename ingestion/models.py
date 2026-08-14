@@ -3,8 +3,16 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from pydantic import ConfigDict, Field, ValidationInfo, field_validator, model_validator
-from pydantic import BaseModel
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StrictInt,
+    StrictStr,
+    ValidationInfo,
+    field_validator,
+    model_validator,
+)
 
 
 _FILENAME_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*\.pdf")
@@ -16,14 +24,21 @@ class CorpusDocument(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    document_id: str = Field(min_length=1)
-    filename: str
-    title: str = Field(min_length=1)
-    semester: str = Field(min_length=1)
-    pages: int = Field(gt=0)
-    sha256: str
-    download_url: str
-    topics: tuple[str, ...] = Field(min_length=1)
+    document_id: StrictStr = Field(min_length=1)
+    filename: StrictStr
+    title: StrictStr = Field(min_length=1)
+    semester: StrictStr = Field(min_length=1)
+    pages: StrictInt = Field(gt=0)
+    sha256: StrictStr
+    download_url: StrictStr
+    topics: tuple[StrictStr, ...] = Field(min_length=1)
+
+    @field_validator("document_id", "title", "semester")
+    @classmethod
+    def validate_required_text(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("required metadata must not be blank")
+        return value.strip()
 
     @field_validator("filename")
     @classmethod
@@ -60,9 +75,16 @@ class CorpusManifest(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    schema_version: int = Field(ge=1)
-    corpus_version: str = Field(min_length=1)
+    schema_version: StrictInt = Field(ge=1, le=1)
+    corpus_version: StrictStr = Field(min_length=1)
     documents: tuple[CorpusDocument, ...] = Field(min_length=1)
+
+    @field_validator("corpus_version")
+    @classmethod
+    def validate_corpus_version(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("corpus version must not be blank")
+        return value.strip()
 
     @model_validator(mode="after")
     def validate_unique_documents(self) -> "CorpusManifest":
