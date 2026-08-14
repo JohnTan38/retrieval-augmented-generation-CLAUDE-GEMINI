@@ -1,0 +1,164 @@
+"""Deterministic semantic, page-local chunking for the fixed corpus."""
+
+from __future__ import annotations
+
+from collections.abc import Sequence
+import hashlib
+import re
+
+from ingestion.models import ChunkRecord, CorpusDocument, PageText
+
+
+DEFAULT_CORPUS_VERSION = "swk501-2026-01-v1"
+_WORD_PATTERN = re.compile(r"\S+")
+_PARAGRAPH_BREAK_PATTERN = re.compile(r"\n[^\S\r\n]*\n+")
+
+
+def chunk_pages(
+    document: CorpusDocument,
+    pages: Sequence[PageText],
+    target_words: int = 650,
+    overlap_words: int = 90,
+    *,
+    corpus_version: str = DEFAULT_CORPUS_VERSION,
+) -> list[ChunkRecord]:
+    """Return stable semantic chunks without crossing a PDF page boundary."""
+    _validate_parameters(target_words, overlap_words, corpus_version)
+    page_list = _validate_pages(document, pages)
+    effective_overlap = min(overlap_words, target_words // 2)
+
+    chunks: list[ChunkRecord] = []
+    for page in page_list:
+        chunks.extend(
+            _chunk_page(
+                document,
+                page,
+                target_words=target_words,
+                overlap_words=effective_overlap,
+                corpus_version=corpus_version,
+            )
+        )
+    return chunks
+
+
+def _validate_parameters(
+    target_words: int, overlap_words: int, corpus_version: str
+) -> None:
+    if (
+        isinstance(target_words, bool)
+        or not isinstance(target_words, int)
+        or isinstance(overlap_words, bool)
+        or not isinstance(overlap_words, int)
+        or target_words <= 0
+        or overlap_words < 0
+        or overlap_words >= target_words
+    ):
+        raise ValueError("word parameters require positive target and smaller overlap")
+    if not isinstance(corpus_version, str) or not corpus_version.strip():
+        raise ValueError("corpus version must not be blank")
+
+
+def _validate_pages(document: CorpusDocument, pages: Sequence[PageText]) -> list[PageText]:
+    if not isinstance(pages, Sequence) or isinstance(pages, (str, bytes)):
+        raise ValueError("pages must be a non-empty ordered page sequence")
+    page_list = list(pages)
+    if not page_list:
+        raise ValueError("pages must not be empty")
+
+    previous_page = 0
+    for page in page_list:
+        if not isinstance(page, PageText):
+            raise ValueError("pages must contain PageText values")
+        if (
+            not isinstance(page.page, int)
+            or isinstance(page.page, bool)
+            or page.page <= previous_page
+        ):
+            raise ValueError("pages must have unique, ordered positive page numbers")
+        if page.page > document.pages or page.document_id != document.document_id:
+            raise ValueError("pages must belong to the document")
+        if not isinstance(page.text, str) or not page.text.strip():
+            raise ValueError("pages must contain nonblank text")
+        previous_page = page.page
+    return page_list
+
+
+def _chunk_page(
+    document: CorpusDocument,
+    page: PageText,
+    *,
+    target_words: int,
+    overlap_words: int,
+    corpus_version: str,
+) -> list[ChunkRecord]:
+    word_matches = list(_WORD_PATTERN.finditer(page.text))
+    words = [match.group() for match in word_matches]
+    paragraph_boundaries = _paragraph_boundaries(page.text, word_matches)
+    sentence_boundaries = [
+        position for position, word in enumerate(words, start=1) if word.endswith((".", "!", "?"))
+    ]
+    records: list[ChunkRecord] = []
+    start = 0
+
+    while start < len(words):
+        end = _choose_chunk_end(
+            start,
+            len(words),
+            target_words,
+            overlap_words,
+            paragraph_boundaries,
+            sentence_boundaries,
+        )
+        if end < len(words) and len(words) - end <= overlap_words:
+            end = len(words)
+        text = " ".join(words[start:end])
+        ordinal = len(records) + 1
+        records.append(
+            ChunkRecord(
+                chunk_id=_chunk_id(corpus_version, document.document_id, page.page, ordinal, text),
+                document_id=document.document_id,
+                filename=document.filename,
+                semester=document.semester,
+                page=page.page,
+                text=text,
+                topics=document.topics,
+            )
+        )
+        start = end if end == len(words) else end - overlap_words
+    return records
+
+
+def _paragraph_boundaries(text: str, word_matches: list[re.Match[str]]) -> list[int]:
+    boundaries: list[int] = []
+    for paragraph_break in _PARAGRAPH_BREAK_PATTERN.finditer(text):
+        word_count = sum(match.end() <= paragraph_break.start() for match in word_matches)
+        boundaries.append(word_count)
+    return boundaries
+
+
+def _choose_chunk_end(
+    start: int,
+    word_count: int,
+    target_words: int,
+    overlap_words: int,
+    paragraph_boundaries: list[int],
+    sentence_boundaries: list[int],
+) -> int:
+    requested_end = min(start + target_words, word_count)
+    minimum_end = start + overlap_words
+    for boundaries in (paragraph_boundaries, sentence_boundaries):
+        candidates = [
+            boundary
+            for boundary in boundaries
+            if minimum_end < boundary <= requested_end
+        ]
+        if candidates:
+            return candidates[-1]
+    return requested_end
+
+
+def _chunk_id(
+    corpus_version: str, document_id: str, page: int, ordinal: int, text: str
+) -> str:
+    source = f"{corpus_version}|{document_id}|{page}|{ordinal}|{text}".encode("utf-8")
+    return hashlib.sha256(source).hexdigest()[:24]

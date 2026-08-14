@@ -17,6 +17,13 @@ from pydantic import (
 
 _FILENAME_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*\.pdf")
 _SHA256_PATTERN = re.compile(r"[0-9a-fA-F]{64}")
+_CHUNK_ID_PATTERN = re.compile(r"[0-9a-f]{24}")
+
+
+def _required_text(value: str, field_name: str) -> str:
+    if not value.strip():
+        raise ValueError(f"{field_name} must not be blank")
+    return value.strip()
 
 
 class CorpusDocument(BaseModel):
@@ -36,9 +43,7 @@ class CorpusDocument(BaseModel):
     @field_validator("document_id", "title", "semester")
     @classmethod
     def validate_required_text(cls, value: str) -> str:
-        if not value.strip():
-            raise ValueError("required metadata must not be blank")
-        return value.strip()
+        return _required_text(value, "required metadata")
 
     @field_validator("filename")
     @classmethod
@@ -82,9 +87,7 @@ class CorpusManifest(BaseModel):
     @field_validator("corpus_version")
     @classmethod
     def validate_corpus_version(cls, value: str) -> str:
-        if not value.strip():
-            raise ValueError("corpus version must not be blank")
-        return value.strip()
+        return _required_text(value, "corpus version")
 
     @model_validator(mode="after")
     def validate_unique_documents(self) -> "CorpusManifest":
@@ -95,3 +98,65 @@ class CorpusManifest(BaseModel):
         if len(filenames) != len(set(filenames)):
             raise ValueError("duplicate filenames are not allowed")
         return self
+
+
+class PageText(BaseModel):
+    """Normalized extractable text from one one-based PDF page."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    document_id: StrictStr
+    page: StrictInt = Field(gt=0)
+    text: StrictStr
+
+    @field_validator("document_id")
+    @classmethod
+    def validate_document_id(cls, value: str) -> str:
+        return _required_text(value, "document ID")
+
+    @field_validator("text")
+    @classmethod
+    def validate_text(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("page text must not be blank")
+        return value
+
+
+class ChunkRecord(BaseModel):
+    """Stable, page-local semantic chunk and its source metadata."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    chunk_id: StrictStr
+    document_id: StrictStr
+    filename: StrictStr
+    semester: StrictStr
+    page: StrictInt = Field(gt=0)
+    text: StrictStr
+    topics: tuple[StrictStr, ...] = Field(min_length=1)
+
+    @field_validator("chunk_id")
+    @classmethod
+    def validate_chunk_id(cls, value: str) -> str:
+        if not _CHUNK_ID_PATTERN.fullmatch(value):
+            raise ValueError("chunk ID must be a 24-character lowercase hexadecimal string")
+        return value
+
+    @field_validator("document_id", "filename", "semester")
+    @classmethod
+    def validate_source_text(cls, value: str) -> str:
+        return _required_text(value, "chunk metadata")
+
+    @field_validator("text")
+    @classmethod
+    def validate_chunk_text(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("chunk text must not be blank")
+        return value
+
+    @field_validator("topics")
+    @classmethod
+    def validate_chunk_topics(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        if not all(topic.strip() for topic in value):
+            raise ValueError("chunk topics must not contain empty values")
+        return tuple(topic.strip() for topic in value)
