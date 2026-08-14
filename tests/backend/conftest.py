@@ -45,7 +45,7 @@ class FakeRetriever:
                 chunk_id="a" * 24, source_id="a" * 24, document_id="jan-2026",
                 filename="swk501-january-2026.pdf", title="SWK501 January 2026",
                 semester="January 2026", page=2, excerpt="Arnett describes emerging adulthood as exploratory.",
-                score=0.9, download_url="/documents/swk501-january-2026.pdf",
+                score=0.9, lexical_score=1.0, download_url="/documents/swk501-january-2026.pdf",
             )
         ]
 

@@ -15,7 +15,7 @@ from backend.citation import validate_citations
 
 
 LOGGER = logging.getLogger(__name__)
-MIN_EVIDENCE_SCORE = 1.0 / 65.0
+MIN_DENSE_SUPPORT = 0.75
 SAFE_REFUSAL = "I do not have enough evidence in the supplied study materials to answer this question."
 
 
@@ -52,42 +52,95 @@ class RagService:
 
     async def stream_query(self, query: str, request_id: str) -> AsyncIterator[ServerSentEvent]:
         started = self.clock()
+        deadline = started + self.total_timeout_seconds
         retrieval_mode = "hybrid"
-        vector: list[float] | None = None
+        lexical_task = asyncio.create_task(_lexical_search(self.retriever, query))
+        embedding_task = asyncio.create_task(self.gemini.embed_query(query))
+        timed_out = False
         try:
-            candidate = await asyncio.wait_for(self.gemini.embed_query(query), timeout=self.embedding_timeout_seconds)
-            vector = _validated_vector(candidate, self.embedding_dimensions)
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            retrieval_mode = "lexical_degraded"
-        try:
-            evidence = await _search(self.retriever, query, vector, self.embedding_timeout_seconds)
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            retrieval_mode = "lexical_degraded"
+            # Lexical search deliberately leads the race.  A useful lexical result
+            # must not sit behind a slow embedding request, while an empty lexical
+            # result still waits for dense semantic retrieval before refusing.
             try:
-                evidence = await _search(self.retriever, query, None, self.embedding_timeout_seconds)
+                evidence = await _within_budget(lexical_task, deadline, self.embedding_timeout_seconds, self.clock)
             except asyncio.CancelledError:
+                await _cancel(embedding_task)
                 raise
+            except (TimeoutError, asyncio.TimeoutError):
+                evidence = []
+                timed_out = True
+                retrieval_mode = "lexical_degraded"
             except Exception:
                 evidence = []
+                retrieval_mode = "lexical_degraded"
+
+            vector: list[float] | None = None
+            if embedding_task.done():
+                try:
+                    vector = _validated_vector(embedding_task.result(), self.embedding_dimensions)
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    retrieval_mode = "lexical_degraded"
+            elif not evidence:
+                # With no query-term support, wait only for the remaining shared
+                # budget so grounded paraphrases can use high-confidence dense
+                # evidence.  This never gives embedding a new full deadline.
+                try:
+                    candidate = await _within_budget(embedding_task, deadline, self.embedding_timeout_seconds, self.clock)
+                    vector = _validated_vector(candidate, self.embedding_dimensions)
+                except asyncio.CancelledError:
+                    raise
+                except (TimeoutError, asyncio.TimeoutError):
+                    timed_out = True
+                    retrieval_mode = "lexical_degraded"
+                except Exception:
+                    retrieval_mode = "lexical_degraded"
+            else:
+                # The lexical sources can be presented now; do not delay them for
+                # an optional dense rerank that has not completed.
+                retrieval_mode = "lexical_degraded"
+
+            if vector is not None:
+                try:
+                    evidence = await _within_budget(_search(self.retriever, query, vector), deadline, self.embedding_timeout_seconds, self.clock)
+                except asyncio.CancelledError:
+                    raise
+                except (TimeoutError, asyncio.TimeoutError):
+                    timed_out = True
+                    retrieval_mode = "lexical_degraded"
+                except Exception:
+                    retrieval_mode = "lexical_degraded"
+                    # A vector-index failure must retry the explicit lexical
+                    # path, rather than trusting an earlier partial result.
+                    try:
+                        evidence = await _within_budget(_lexical_search(self.retriever, query), deadline, self.embedding_timeout_seconds, self.clock)
+                    except asyncio.CancelledError:
+                        raise
+                    except (TimeoutError, asyncio.TimeoutError): timed_out = True
+                    except Exception:
+                        evidence = []
+            await _cancel(embedding_task)
+        except asyncio.CancelledError:
+            await _cancel(lexical_task)
+            await _cancel(embedding_task)
+            raise
         sources = _present(evidence)
         timings = {"retrieval_ms": _milliseconds(started, self.clock())}
         yield ServerSentEvent(name="sources", data={"request_id": request_id, "retrieval_mode": retrieval_mode, "sources": [source.model_dump() for source in sources], "timings": timings})
+        if timed_out:
+            yield _error("generation_timeout", "Answer generation timed out.", retryable=True)
+            return
         if _weak(evidence):
             yield ServerSentEvent(name="complete", data={"request_id": request_id, "timings": _timings(started, self.clock()), "cited_source_ids": [], "citation_valid": True, "refusal": True, "message": SAFE_REFUSAL})
             return
         answer = ""
         iterator: AsyncIterator[str] | None = None
         try:
-            if self.clock() - started > self.total_timeout_seconds:
-                raise TimeoutError
             iterator = self.gemini.stream_answer(query, sources)
-            async with asyncio.timeout(self.generation_timeout_seconds):
+            async with asyncio.timeout(_remaining(deadline, self.generation_timeout_seconds, self.clock)):
                 async for delta in iterator:
-                    if self.clock() - started > self.total_timeout_seconds:
+                    if self.clock() >= deadline:
                         raise TimeoutError
                     if delta:
                         answer += delta
@@ -121,8 +174,42 @@ async def _close(iterator: AsyncIterator[str] | None) -> None:
         await closer()
 
 
-async def _search(retriever: object, query: str, vector: list[float] | None, timeout: float) -> list[object]:
-    return await asyncio.wait_for(asyncio.to_thread(retriever.search, query, vector), timeout=timeout)
+async def _search(retriever: object, query: str, vector: list[float]) -> list[object]:
+    return await asyncio.to_thread(retriever.search, query, vector)
+
+
+async def _lexical_search(retriever: object, query: str) -> list[object]:
+    search = getattr(retriever, "search_lexical", None)
+    if search is None:
+        return await asyncio.to_thread(retriever.search, query, None)
+    return await asyncio.to_thread(search, query)
+
+
+async def _within_budget(awaitable: object, deadline: float, stage_timeout: float, clock: Callable[[], float]):
+    try:
+        timeout = _remaining(deadline, stage_timeout, clock)
+    except BaseException:
+        closer = getattr(awaitable, "close", None)
+        if closer is not None:
+            closer()
+        raise
+    return await asyncio.wait_for(awaitable, timeout=timeout)
+
+
+def _remaining(deadline: float, stage_timeout: float, clock: Callable[[], float]) -> float:
+    remaining = min(stage_timeout, deadline - clock())
+    if remaining <= 0:
+        raise TimeoutError
+    return remaining
+
+
+async def _cancel(task: asyncio.Task[object]) -> None:
+    if not task.done():
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
 
 
 def _validated_vector(vector: object, dimensions: int) -> list[float]:
@@ -134,7 +221,9 @@ def _validated_vector(vector: object, dimensions: int) -> list[float]:
 
 
 def _weak(evidence: Sequence[object]) -> bool:
-    return not evidence or not any(item.score >= MIN_EVIDENCE_SCORE for item in evidence)
+    return not evidence or not any(
+        item.lexical_score > 0.0 or item.dense_score >= MIN_DENSE_SUPPORT for item in evidence
+    )
 
 
 def _milliseconds(started: float, now: float) -> int:

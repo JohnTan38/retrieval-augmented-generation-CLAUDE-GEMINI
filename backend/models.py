@@ -47,6 +47,8 @@ class SourceEvidence(BaseModel):
     page: StrictInt = Field(gt=0)
     excerpt: StrictStr = Field(min_length=1, max_length=600)
     score: StrictFloat = Field(gt=0)
+    lexical_score: StrictFloat = Field(ge=0, default=0.0)
+    dense_score: StrictFloat = Field(ge=0, default=0.0)
     download_url: StrictStr
 
     @field_validator("filename")
@@ -70,7 +72,7 @@ class SourceEvidence(BaseModel):
             raise ValueError("evidence text must not be blank")
         return value
 
-    @field_validator("score")
+    @field_validator("score", "lexical_score", "dense_score")
     @classmethod
     def score_is_finite(cls, value: float) -> float:
         if not math.isfinite(value):

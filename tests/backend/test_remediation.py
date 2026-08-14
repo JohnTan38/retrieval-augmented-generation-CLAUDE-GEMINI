@@ -22,17 +22,18 @@ def test_default_artifact_path_matches_task_four_output():
 
 
 class RecordingRetriever(FakeRetriever):
-    def __init__(self, *, fail_dense: bool = False, score: float = 0.9) -> None:
+    def __init__(self, *, fail_dense: bool = False, score: float = 0.9, lexical_support: float | None = None) -> None:
         self.calls: list[list[float] | None] = []
         self.fail_dense = fail_dense
         self.score = score
+        self.lexical_support = score if lexical_support is None else lexical_support
 
     def search(self, query: str, vector: list[float] | None, top_k: int = 5):
         self.calls.append(vector)
         if vector is not None and self.fail_dense:
             raise RuntimeError("dense index error")
         result = super().search(query, vector, top_k)
-        return [item.model_copy(update={"score": self.score}) for item in result]
+        return [item.model_copy(update={"score": self.score, "lexical_score": self.lexical_support}) for item in result]
 
 
 class VectorProvider:
@@ -68,7 +69,7 @@ def test_vector_search_failure_retries_lexical_retrieval():
     async def exercise():
         retriever = RecordingRetriever(fail_dense=True)
         events_out = [event async for event in RagService(retriever, VectorProvider([1.0]), embedding_dimensions=1).stream_query("Arnett", "req")]
-        assert retriever.calls == [[1.0], None]
+        assert retriever.calls == [None, [1.0], None]
         assert events_out[0].data["retrieval_mode"] == "lexical_degraded"
 
     asyncio.run(exercise())
@@ -80,9 +81,7 @@ def test_cancellation_during_lexical_retry_is_propagated(monkeypatch):
     async def exercise():
         reached_retry = asyncio.Event()
 
-        async def controlled_search(retriever, query, vector, timeout):
-            if vector is not None:
-                raise RuntimeError("dense failed")
+        async def controlled_search(retriever, query, vector):
             reached_retry.set()
             await asyncio.Event().wait()
 
@@ -100,7 +99,7 @@ def test_cancellation_during_lexical_retry_is_propagated(monkeypatch):
 def test_weak_evidence_refuses_without_calling_generation():
     async def exercise():
         provider = VectorProvider([1.0])
-        events_out = [event async for event in RagService(RecordingRetriever(score=0.001), provider, embedding_dimensions=1).stream_query("Arnett", "req")]
+        events_out = [event async for event in RagService(RecordingRetriever(score=0.001, lexical_support=0.0), provider, embedding_dimensions=1).stream_query("Arnett", "req")]
         assert [event.name for event in events_out] == ["sources", "complete"]
         assert events_out[-1].data["refusal"] is True
         assert provider.generated is False

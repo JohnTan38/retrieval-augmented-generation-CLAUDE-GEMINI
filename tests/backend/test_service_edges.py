@@ -75,9 +75,10 @@ def test_service_handles_retrieval_failure_blank_deltas_and_total_budget():
         budget_events = [event async for event in over_budget.stream_query("Arnett", "req")]
         assert budget_events[-1].data["code"] == "generation_timeout"
 
+        ticks = iter((0.0, 0.0, 0.0, 0.0, 0.0, 2.0))
         during_stream = RagService(
             FakeRetriever(), BlankProvider(), total_timeout_seconds=1,
-            clock=iter((0.0, 0.0, 0.0, 2.0)).__next__,
+            clock=lambda: next(ticks, 2.0),
         )
         stream_budget_events = [event async for event in during_stream.stream_query("Arnett", "req")]
         assert stream_budget_events[-1].data["code"] == "generation_timeout"

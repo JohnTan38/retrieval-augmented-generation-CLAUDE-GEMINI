@@ -111,7 +111,20 @@ class HybridRetriever:
         lexical = bm25_rank(self._store, query)
         dense = [] if query_vector is None else cosine_rank(self._store, query_vector)
         fused = reciprocal_rank_fusion([item.chunk_id for item in lexical], [item.chunk_id for item in dense])
-        return [_source_evidence(self._store, item) for item in diversity_select(self._store, fused, top_k=top_k)]
+        lexical_scores = {item.chunk_id: item.score for item in lexical}
+        dense_scores = {item.chunk_id: item.score for item in dense}
+        return [_source_evidence(self._store, item, lexical_scores.get(item.chunk_id, 0.0), dense_scores.get(item.chunk_id, 0.0)) for item in diversity_select(self._store, fused, top_k=top_k)]
+
+    def search_lexical(self, query: str, top_k: int = 5) -> list[SourceEvidence]:
+        """Return immediately available lexical evidence with raw query-term support."""
+        if not isinstance(query, str) or not query.strip():
+            raise ValueError("query must be nonblank")
+        if isinstance(top_k, bool) or not isinstance(top_k, int) or not 1 <= top_k <= 5:
+            raise ValueError("top_k must be between 1 and 5")
+        lexical = bm25_rank(self._store, query)
+        fused = reciprocal_rank_fusion([item.chunk_id for item in lexical], [])
+        lexical_scores = {item.chunk_id: item.score for item in lexical}
+        return [_source_evidence(self._store, item, lexical_scores[item.chunk_id]) for item in diversity_select(self._store, fused, top_k=top_k)]
 
 
 def _normalized_query_vector(query_vector: Sequence[float], dimensions: int) -> tuple[float, ...]:
@@ -130,7 +143,7 @@ def _normalized_query_vector(query_vector: Sequence[float], dimensions: int) -> 
     return tuple(value / scaled_length for value in scaled)
 
 
-def _source_evidence(store: IndexStore, result: DiverseResult) -> SourceEvidence:
+def _source_evidence(store: IndexStore, result: DiverseResult, lexical_score: float = 0.0, dense_score: float = 0.0) -> SourceEvidence:
     chunk = store.chunks_by_id[result.chunk_id]
     document = store.documents_by_id[chunk.document_id]
     excerpt = " ".join(chunk.text.split())[:600]
@@ -144,5 +157,7 @@ def _source_evidence(store: IndexStore, result: DiverseResult) -> SourceEvidence
         page=chunk.page,
         excerpt=excerpt,
         score=result.score,
+        lexical_score=lexical_score,
+        dense_score=dense_score,
         download_url=document.download_url,
     )

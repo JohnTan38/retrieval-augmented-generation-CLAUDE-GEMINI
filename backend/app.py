@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -48,12 +49,20 @@ def create_app(*, store: object | None = None, retriever: object | None = None, 
     app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
     @app.middleware("http")
     async def security_headers(request: Request, call_next):
-        response = await call_next(request)
+        request_id = uuid.uuid4().hex
+        request.state.request_id = request_id
+        try:
+            response = await call_next(request)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            response = _safe_error(500, "internal_error", "The study service is temporarily unavailable.", request_id)
         response.headers["Content-Security-Policy"] = _CSP
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["X-Frame-Options"] = "DENY"
         response.headers["Referrer-Policy"] = "no-referrer"
         response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=(), browsing-topics=()"
+        response.headers["X-Request-ID"] = request_id
         if os.environ.get("VERCEL_ENV") == "production":
             response.headers["Strict-Transport-Security"] = "max-age=63072000; includeSubDomains; preload"
         return response
@@ -82,15 +91,15 @@ def create_app(*, store: object | None = None, retriever: object | None = None, 
         return JSONResponse({"ready": True, "schema_version": active.artifact.schema_version, "corpus_version": active.artifact.corpus_version, "documents": len(documents), "pages": sum(document.pages for document in documents), "status": "ready"})
 
     @app.get("/api/corpus")
-    async def corpus() -> JSONResponse:
+    async def corpus(request: Request) -> JSONResponse:
         active = app.state.store
         if active is None:
-            return _safe_error(503, "index_unavailable", "The study corpus is not ready.")
+            return _safe_error(503, "index_unavailable", "The study corpus is not ready.", request.state.request_id)
         return JSONResponse({"documents": [document.model_dump() if hasattr(document, "model_dump") else {name: getattr(document, name) for name in ("document_id", "filename", "title", "semester", "pages", "topics", "sha256", "download_url")} for document in active.artifact.documents]})
 
     @app.post("/api/query", response_model=None)
     async def query(request: Request):
-        request_id = uuid.uuid4().hex
+        request_id = request.state.request_id
         content_type = request.headers.get("content-type", "")
         if content_type.split(";", 1)[0].strip().lower() != "application/json":
             return _safe_error(415, "invalid_request", "Content type must be application/json.", request_id)
@@ -98,7 +107,7 @@ def create_app(*, store: object | None = None, retriever: object | None = None, 
             body = json.loads((await _read_limited_body(request)).decode("utf-8"))
         except RequestBodyTooLarge:
             return _safe_error(413, "invalid_request", "Request body is too large.", request_id)
-        except (json.JSONDecodeError, UnicodeDecodeError):
+        except (json.JSONDecodeError, UnicodeDecodeError, RecursionError):
             return _safe_error(400, "invalid_request", "Request JSON is malformed.", request_id)
         try:
             payload = QueryRequest.model_validate(body)
