@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from ingestion.artifact import ArtifactChunk, BM25Data, IndexArtifact, read_artifact, write_artifact
+from ingestion.artifact import ArtifactChunk, BM25Data, IndexArtifact, read_artifact, read_artifact_bytes, write_artifact
 from ingestion.models import CorpusDocument
 
 
@@ -106,6 +106,27 @@ def test_read_artifact_rejects_non_json_gzip() -> None:
             read_artifact(output)
     finally:
         output.unlink(missing_ok=True)
+
+
+def test_read_artifact_bytes_validates_one_immutable_snapshot() -> None:
+    artifact = _artifact()
+    output = OUTPUT_DIRECTORY / "_task4-snapshot.json.gz"
+    try:
+        write_artifact(output, artifact)
+        snapshot = output.read_bytes()
+        output.write_bytes(b"not a gzip artifact")
+        assert read_artifact_bytes(snapshot) == artifact
+        with pytest.raises(ValueError, match="gzip JSON"):
+            read_artifact_bytes(output.read_bytes())
+    finally:
+        output.unlink(missing_ok=True)
+
+
+def test_snapshot_reading_rejects_missing_paths_and_non_bytes(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="gzip JSON"):
+        read_artifact(tmp_path / "missing.json.gz")
+    with pytest.raises(ValueError, match="gzip JSON"):
+        read_artifact_bytes("not bytes")  # type: ignore[arg-type]
 
 
 def test_artifact_rejects_chunk_id_suffix_and_document_metadata_corruption() -> None:

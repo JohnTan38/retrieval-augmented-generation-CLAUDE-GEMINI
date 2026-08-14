@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 import gzip
+import io
 import json
 import math
 import os
@@ -127,8 +128,20 @@ def write_artifact(path: Path, artifact: IndexArtifact) -> None:
 
 def read_artifact(path: Path) -> IndexArtifact:
     try:
-        with gzip.open(path, "rt", encoding="utf-8") as compressed:
-            payload: Mapping[str, object] = json.load(compressed)
+        snapshot = path.read_bytes()
+    except OSError as error:
+        raise ValueError("index artifact must be a valid UTF-8 gzip JSON document") from error
+    return read_artifact_bytes(snapshot)
+
+
+def read_artifact_bytes(snapshot: bytes) -> IndexArtifact:
+    """Parse and validate one immutable compressed-artifact byte snapshot."""
+    if not isinstance(snapshot, bytes):
+        raise ValueError("index artifact must be a valid UTF-8 gzip JSON document")
+    try:
+        with gzip.GzipFile(fileobj=io.BytesIO(snapshot), mode="rb") as compressed:
+            with io.TextIOWrapper(compressed, encoding="utf-8") as text:
+                payload: Mapping[str, object] = json.load(text)
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
         raise ValueError("index artifact must be a valid UTF-8 gzip JSON document") from error
     try:

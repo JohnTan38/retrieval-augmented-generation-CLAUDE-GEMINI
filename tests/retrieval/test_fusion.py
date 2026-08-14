@@ -26,16 +26,34 @@ def test_rrf_deduplicates_inputs_and_breaks_ties_by_chunk_id() -> None:
         reciprocal_rank_fusion(["a", ""], [])
 
 
+def test_rrf_deduplicates_before_assigning_default_ranks_and_sums_both_lists() -> None:
+    fused = reciprocal_rank_fusion(["a", "a", "b"], ["b", "b", "a"])
+
+    assert [item.chunk_id for item in fused] == ["a", "b"]
+    assert fused[0].score == pytest.approx(1 / 61 + 1 / 62)
+    assert fused[1].score == pytest.approx(1 / 62 + 1 / 61)
+    assert reciprocal_rank_fusion(["a", "a", "b"], [])[1].score == pytest.approx(1 / 62)
+
+
 def test_diversity_suppresses_extra_chunks_from_one_document_page(index_store) -> None:
     by_page = {}
     for chunk_id, chunk in index_store.chunks_by_id.items():
         by_page.setdefault((chunk.document_id, chunk.page), []).append(chunk_id)
     page_chunks = next(chunk_ids for chunk_ids in by_page.values() if len(chunk_ids) > 1)
-    ranked = reciprocal_rank_fusion(page_chunks + [next(chunk_id for chunk_id, chunk in index_store.chunks_by_id.items() if chunk.document_id == "jul-2025")], [])
+    distinct_chunks = [
+        next(chunk_id for chunk_id, chunk in index_store.chunks_by_id.items() if chunk.document_id == document_id)
+        for document_id in ("jul-2025", "jan-2026")
+    ]
+    ranked = reciprocal_rank_fusion(page_chunks + distinct_chunks, [])
 
     selected = diversity_select(index_store, ranked, top_k=2)
 
     assert len(selected) == 2
     assert len({(item.document_id, item.page) for item in selected}) == 2
+    assert len(diversity_select(index_store, ranked, top_k=3)) == 3
     with pytest.raises(ValueError, match="absent"):
         diversity_select(index_store, reciprocal_rank_fusion(["missing"], []), top_k=1)
+    for invalid_top_k in (0, -1, True, 6):
+        with pytest.raises(ValueError, match="top_k"):
+            diversity_select(index_store, ranked, top_k=invalid_top_k)
+    assert diversity_select(index_store, [], top_k=1) == []

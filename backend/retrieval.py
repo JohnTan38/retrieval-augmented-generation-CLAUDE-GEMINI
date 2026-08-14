@@ -66,10 +66,11 @@ def reciprocal_rank_fusion(
     scores: dict[str, float] = {}
     for ranking in (lexical, dense):
         seen: set[str] = set()
-        for rank, chunk_id in enumerate(ranking, start=1):
+        for chunk_id in ranking:
             if not isinstance(chunk_id, str) or not chunk_id:
                 raise ValueError("rankings must contain chunk IDs")
             if chunk_id not in seen:
+                rank = len(seen) + 1
                 scores[chunk_id] = scores.get(chunk_id, 0.0) + 1.0 / (k + rank)
                 seen.add(chunk_id)
     return [FusedResult(chunk_id=chunk_id, score=score) for chunk_id, score in sorted(scores.items(), key=lambda item: (-item[1], item[0]))]
@@ -77,6 +78,8 @@ def reciprocal_rank_fusion(
 
 def diversity_select(store: IndexStore, ranked: Sequence[FusedResult], *, top_k: int) -> list[DiverseResult]:
     """Keep one chunk per document/page and fill from remaining ranked evidence."""
+    if isinstance(top_k, bool) or not isinstance(top_k, int) or not 1 <= top_k <= 5:
+        raise ValueError("top_k must be between 1 and 5")
     selected: list[DiverseResult] = []
     represented_pages: set[tuple[str, int]] = set()
     for result in ranked:
@@ -119,10 +122,12 @@ def _normalized_query_vector(query_vector: Sequence[float], dimensions: int) -> 
         if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(float(value)):
             raise ValueError("query vector values must be finite numbers")
         values.append(float(value))
-    length = math.sqrt(sum(value * value for value in values))
-    if length == 0.0:
+    scale = max(abs(value) for value in values)
+    if scale == 0.0:
         raise ValueError("query vector must not be zero")
-    return tuple(value / length for value in values)
+    scaled = [value / scale for value in values]
+    scaled_length = math.sqrt(sum(value * value for value in scaled))
+    return tuple(value / scaled_length for value in scaled)
 
 
 def _source_evidence(store: IndexStore, result: DiverseResult) -> SourceEvidence:

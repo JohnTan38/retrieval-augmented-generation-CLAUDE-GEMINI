@@ -64,7 +64,7 @@ def test_rejects_missing_artifact_and_has_a_test_only_reset_hook(tmp_path: Path)
     assert IndexStore.cache_size_for_tests() == 0
 
 
-def test_cache_is_bounded_and_revalidates_drift_while_loading(artifact_path: Path, tmp_path: Path, monkeypatch) -> None:
+def test_cache_is_bounded(artifact_path: Path, tmp_path: Path) -> None:
     original_bytes = artifact_path.read_bytes()
     for index in range(9):
         path = tmp_path / f"copy-{index}.json.gz"
@@ -72,12 +72,30 @@ def test_cache_is_bounded_and_revalidates_drift_while_loading(artifact_path: Pat
         IndexStore.load(path)
     assert IndexStore.cache_size_for_tests() == 8
 
+
+
+def test_cache_hit_uses_one_snapshot_when_path_is_replaced_after_read(artifact_path: Path, monkeypatch) -> None:
     from backend import index_store as module
 
-    actual = module._file_sha256(artifact_path)
-    fingerprints = iter((actual, "changed-during-load"))
-    IndexStore.reset_cache_for_tests()
-    monkeypatch.setattr(module, "_file_sha256", lambda _: next(fingerprints))
+    first = IndexStore.load(artifact_path)
+    original_read = module._read_snapshot
+    replacement = read_artifact(artifact_path).model_copy(update={"corpus_version": "replacement"})
+
+    def snapshot_then_replace(path: Path) -> bytes:
+        snapshot = original_read(path)
+        write_artifact(path, replacement)
+        return snapshot
+
+    monkeypatch.setattr(module, "_read_snapshot", snapshot_then_replace)
+    assert IndexStore.load(artifact_path) is first
+    monkeypatch.setattr(module, "_read_snapshot", original_read)
+    assert IndexStore.load(artifact_path).corpus_version == "replacement"
+
+
+def test_rejects_a_corrupt_snapshot_without_reopening_the_path(artifact_path: Path, monkeypatch) -> None:
+    from backend import index_store as module
+
+    monkeypatch.setattr(module, "_read_snapshot", lambda _: b"not a gzip artifact")
     with pytest.raises(ValueError, match="invalid"):
         IndexStore.load(artifact_path)
 

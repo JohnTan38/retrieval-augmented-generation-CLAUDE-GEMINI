@@ -1,0 +1,15 @@
+[run]
+branch = True
+source =
+    backend
+    ingestion
+omit =
+    backend/main.py
+    backend/rag_engine.py
+    backend/session_store.py
+    backend/test_uploads.py
+    backend/verify_rag.py
+    backend/build_index.py
+
+[report]
+show_missing = True

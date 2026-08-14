@@ -8,7 +8,7 @@ from pathlib import Path
 from threading import RLock
 from types import MappingProxyType
 
-from ingestion.artifact import ArtifactChunk, IndexArtifact, read_artifact
+from ingestion.artifact import ArtifactChunk, IndexArtifact, read_artifact_bytes
 from ingestion.models import CorpusDocument
 
 
@@ -52,9 +52,10 @@ class IndexStore:
         """Return the validated cache entry for the current file bytes only."""
         try:
             resolved = Path(path).resolve(strict=True)
-            fingerprint = _file_sha256(resolved)
+            snapshot = _read_snapshot(resolved)
         except (OSError, ValueError) as error:
             raise ValueError("index artifact is unavailable") from error
+        fingerprint = _snapshot_sha256(snapshot)
         key = (resolved, fingerprint)
         with cls._cache_lock:
             cached = cls._cache.get(key)
@@ -62,9 +63,7 @@ class IndexStore:
                 cls._cache.move_to_end(key)
                 return cached
             try:
-                artifact = read_artifact(resolved)
-                if _file_sha256(resolved) != fingerprint:
-                    raise ValueError("index artifact changed during validation")
+                artifact = read_artifact_bytes(snapshot)
             except (OSError, ValueError) as error:
                 raise ValueError("index artifact is invalid") from error
             store = cls(artifact, fingerprint)
@@ -121,9 +120,9 @@ def _validate_chunk(
     chunk_ids.add(chunk.chunk_id)
 
 
-def _file_sha256(path: Path) -> str:
-    digest = sha256()
-    with path.open("rb") as stream:
-        for block in iter(lambda: stream.read(65_536), b""):
-            digest.update(block)
-    return digest.hexdigest()
+def _read_snapshot(path: Path) -> bytes:
+    return path.read_bytes()
+
+
+def _snapshot_sha256(snapshot: bytes) -> str:
+    return sha256(snapshot).hexdigest()
