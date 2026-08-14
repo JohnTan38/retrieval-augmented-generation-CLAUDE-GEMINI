@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 
-DEFAULT_ARTIFACT = Path(__file__).resolve().parents[1] / "data" / "index" / "swk501-2026-01-v1.json.gz"
+DEFAULT_ARTIFACT = Path("data/index/swk501-v1.json.gz")
 
 
 class ConfigurationUnavailable(RuntimeError):

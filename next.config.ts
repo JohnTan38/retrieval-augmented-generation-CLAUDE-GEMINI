@@ -17,7 +17,7 @@ const nextConfig: NextConfig = {
       { key: 'Referrer-Policy', value: 'no-referrer' },
       { key: 'Permissions-Policy', value: 'camera=(), microphone=(), geolocation=(), browsing-topics=()' },
     ]
-    if (process.env.NODE_ENV === 'production') {
+    if (process.env.VERCEL_ENV === 'production') {
       securityHeaders.push({ key: 'Strict-Transport-Security', value: 'max-age=63072000; includeSubDomains; preload' })
     }
     return [{ source: '/:path*', headers: securityHeaders }]

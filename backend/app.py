@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 import uuid
 from collections.abc import AsyncIterator
@@ -22,6 +23,12 @@ from backend.service import RagService, ServerSentEvent
 LOGGER = logging.getLogger(__name__)
 _CONTROL = re.compile(r"[\x00-\x1f\x7f-\x9f]")
 MAX_QUERY_LENGTH = 2_000
+MAX_REQUEST_BYTES = 8_192
+_CSP = "default-src 'self'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'; object-src 'none'; img-src 'self' data: blob:; font-src 'self' data:; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src 'self'"
+
+
+class RequestBodyTooLarge(ValueError):
+    pass
 
 
 class QueryRequest(BaseModel):
@@ -39,6 +46,17 @@ class QueryRequest(BaseModel):
 
 def create_app(*, store: object | None = None, retriever: object | None = None, gemini: object | None = None) -> FastAPI:
     app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
+    @app.middleware("http")
+    async def security_headers(request: Request, call_next):
+        response = await call_next(request)
+        response.headers["Content-Security-Policy"] = _CSP
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["X-Frame-Options"] = "DENY"
+        response.headers["Referrer-Policy"] = "no-referrer"
+        response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=(), browsing-topics=()"
+        if os.environ.get("VERCEL_ENV") == "production":
+            response.headers["Strict-Transport-Security"] = "max-age=63072000; includeSubDomains; preload"
+        return response
     settings = get_settings()
     if store is None:
         try:
@@ -52,7 +70,7 @@ def create_app(*, store: object | None = None, retriever: object | None = None, 
             gemini = GeminiClient(require_api_key(settings), store.artifact.embedding_model)
         except (ConfigurationUnavailable, ValueError):
             gemini = None
-    app.state.gateway = RagService(retriever, gemini, settings.embedding_timeout_seconds, settings.generation_timeout_seconds, settings.total_timeout_seconds) if retriever is not None and gemini is not None else None
+    app.state.gateway = RagService(retriever, gemini, settings.embedding_timeout_seconds, settings.generation_timeout_seconds, settings.total_timeout_seconds, store.embedding_dimensions) if retriever is not None and gemini is not None else None
     app.state.store = store
 
     @app.get("/api/health")
@@ -77,7 +95,9 @@ def create_app(*, store: object | None = None, retriever: object | None = None, 
         if content_type.split(";", 1)[0].strip().lower() != "application/json":
             return _safe_error(415, "invalid_request", "Content type must be application/json.", request_id)
         try:
-            body = await request.json()
+            body = json.loads((await _read_limited_body(request)).decode("utf-8"))
+        except RequestBodyTooLarge:
+            return _safe_error(413, "invalid_request", "Request body is too large.", request_id)
         except (json.JSONDecodeError, UnicodeDecodeError):
             return _safe_error(400, "invalid_request", "Request JSON is malformed.", request_id)
         try:
@@ -102,6 +122,20 @@ def _safe_error(status: int, code: str, message: str, request_id: str | None = N
     if request_id:
         payload["request_id"] = request_id
     return JSONResponse(payload, status_code=status)
+
+
+async def _read_limited_body(request: Request) -> bytes:
+    declared = request.headers.get("content-length")
+    if declared and declared.isdecimal() and (len(declared) > len(str(MAX_REQUEST_BYTES)) or int(declared) > MAX_REQUEST_BYTES):
+        raise RequestBodyTooLarge
+    chunks: list[bytes] = []
+    size = 0
+    async for chunk in request.stream():
+        size += len(chunk)
+        if size > MAX_REQUEST_BYTES:
+            raise RequestBodyTooLarge
+        chunks.append(chunk)
+    return b"".join(chunks)
 
 
 app = create_app()

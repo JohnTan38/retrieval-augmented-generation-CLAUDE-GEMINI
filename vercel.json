@@ -5,7 +5,7 @@
     "api/index.py": {
       "memory": 1024,
       "maxDuration": 60,
-      "excludeFiles": "{node_modules/**,dist/**,src/**,public/assets/**,tests/**,evaluation/**,data/source/**,**/test_*.py,backend/main.py,backend/rag_engine.py,backend/session_store.py,backend/verify_rag.py,backend/build_index.py,**/__pycache__/**,.pytest_cache/**}"
+      "excludeFiles": "{node_modules/**,dist/**,src/**,public/assets/**,public/documents/**,tests/**,evaluation/**,data/source/**,**/test_*.py,backend/main.py,backend/rag_engine.py,backend/session_store.py,backend/verify_rag.py,backend/build_index.py,**/__pycache__/**,.pytest_cache/**}"
     }
   },
   "rewrites": [

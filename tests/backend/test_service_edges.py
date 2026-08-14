@@ -96,6 +96,14 @@ def test_service_propagates_embedding_and_retrieval_cancellation_and_closes_opti
             time.sleep(0.05)
             return []
 
+    class FallbackBlockingRetriever:
+        def search(self, query: str, vector):
+            import time
+            if vector is not None:
+                raise RuntimeError("dense failed")
+            time.sleep(0.05)
+            return []
+
     async def exercise():
         embedding_stream = RagService(FakeRetriever(), BlockingEmbedding()).stream_query("Arnett", "req")
         pending_embedding = asyncio.create_task(anext(embedding_stream))
@@ -110,6 +118,14 @@ def test_service_propagates_embedding_and_retrieval_cancellation_and_closes_opti
         pending_retrieval.cancel()
         with __import__("pytest").raises(asyncio.CancelledError):
             await pending_retrieval
+
+        fallback_stream = RagService(FallbackBlockingRetriever(), BlankProvider()).stream_query("Arnett", "req")
+        pending_fallback = asyncio.create_task(anext(fallback_stream))
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        pending_fallback.cancel()
+        with __import__("pytest").raises(asyncio.CancelledError):
+            await pending_fallback
 
         from backend.service import _close
         await _close(None)

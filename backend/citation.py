@@ -8,6 +8,7 @@ from collections.abc import Collection
 
 
 _CITATION = re.compile(r"\[S([1-9][0-9]*)\]")
+_CITATION_MARKER = re.compile(r"\[S[^\]]*\]")
 
 
 @dataclass(frozen=True)
@@ -20,7 +21,7 @@ def validate_citations(answer: str, supplied_ids: Collection[str]) -> CitationRe
     """Return citations in first-seen order and reject only well-formed unknown IDs."""
     seen: set[str] = set()
     cited: list[str] = []
-    valid = True
+    valid = bool(answer.strip())
     for match in _CITATION.finditer(answer):
         source_id = f"S{match.group(1)}"
         if source_id not in supplied_ids:
@@ -28,4 +29,8 @@ def validate_citations(answer: str, supplied_ids: Collection[str]) -> CitationRe
         elif source_id not in seen:
             seen.add(source_id)
             cited.append(source_id)
+    if any(not _CITATION.fullmatch(marker.group(0)) for marker in _CITATION_MARKER.finditer(answer)):
+        valid = False
+    if not cited:
+        valid = False
     return CitationResult(cited_source_ids=cited, valid=valid)

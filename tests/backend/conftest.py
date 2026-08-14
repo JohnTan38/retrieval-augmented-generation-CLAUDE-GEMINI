@@ -23,6 +23,7 @@ class FakeArtifact:
 class FakeStore:
     artifact = FakeArtifact()
     corpus_version = artifact.corpus_version
+    embedding_dimensions = 1
 
     def __init__(self) -> None:
         self.artifact.documents = (
