@@ -100,6 +100,17 @@ def test_rejects_a_corrupt_snapshot_without_reopening_the_path(artifact_path: Pa
         IndexStore.load(artifact_path)
 
 
+def test_load_wraps_a_truncated_gzip_snapshot_as_an_invalid_index(tmp_path: Path) -> None:
+    path = tmp_path / "truncated.json.gz"
+    path.write_bytes(bytes.fromhex("1f8b0800"))
+
+    with pytest.raises(ValueError, match="index artifact is invalid") as error:
+        IndexStore.load(path)
+
+    assert isinstance(error.value.__cause__, ValueError)
+    assert "gzip JSON" in str(error.value.__cause__)
+
+
 def test_store_rejects_constructed_artifact_integrity_corruption(artifact_path: Path) -> None:
     artifact = read_artifact(artifact_path)
     invalid_cases = [

@@ -129,6 +129,11 @@ def test_snapshot_reading_rejects_missing_paths_and_non_bytes(tmp_path: Path) ->
         read_artifact_bytes("not bytes")  # type: ignore[arg-type]
 
 
+def test_snapshot_reader_wraps_a_truncated_gzip_header_as_a_stable_value_error() -> None:
+    with pytest.raises(ValueError, match="gzip JSON"):
+        read_artifact_bytes(bytes.fromhex("1f8b0800"))
+
+
 def test_artifact_rejects_chunk_id_suffix_and_document_metadata_corruption() -> None:
     for field, value in (("chunk_id", "a" * 24 + "x"), ("document_id", "missing"), ("filename", "other.pdf"), ("semester", "Other"), ("page", 2), ("topics", ["other"])):
         data = _artifact().model_dump(mode="json")

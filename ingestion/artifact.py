@@ -142,7 +142,7 @@ def read_artifact_bytes(snapshot: bytes) -> IndexArtifact:
         with gzip.GzipFile(fileobj=io.BytesIO(snapshot), mode="rb") as compressed:
             with io.TextIOWrapper(compressed, encoding="utf-8") as text:
                 payload: Mapping[str, object] = json.load(text)
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+    except (EOFError, OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
         raise ValueError("index artifact must be a valid UTF-8 gzip JSON document") from error
     try:
         return IndexArtifact.model_validate(payload)
