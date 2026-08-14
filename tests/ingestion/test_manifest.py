@@ -90,6 +90,18 @@ def test_manifest_rejects_duplicate_filenames(write_manifest, write_pdf):
         load_manifest(manifest_path, documents_dir)
 
 
+def test_manifest_rejects_casefold_duplicate_filenames():
+    manifest = _manifest_payload(
+        [
+            _document("Case.pdf", "one"),
+            _document("case.pdf", "two"),
+        ]
+    )
+
+    with pytest.raises(ValidationError, match="duplicate filenames"):
+        CorpusManifest.model_validate(manifest)
+
+
 def test_manifest_rejects_missing_or_extra_pdfs(write_manifest, write_pdf):
     document = _document("expected.pdf", "expected")
     manifest_path, documents_dir = write_manifest([document])

@@ -91,7 +91,7 @@ class CorpusManifest(BaseModel):
         document_ids = [document.document_id for document in self.documents]
         if len(document_ids) != len(set(document_ids)):
             raise ValueError("duplicate document IDs are not allowed")
-        filenames = [document.filename for document in self.documents]
+        filenames = [document.filename.casefold() for document in self.documents]
         if len(filenames) != len(set(filenames)):
             raise ValueError("duplicate filenames are not allowed")
         return self
