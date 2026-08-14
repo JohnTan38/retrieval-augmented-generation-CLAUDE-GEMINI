@@ -1,0 +1,107 @@
+"""Same-origin FastAPI gateway for the immutable SWK501 corpus."""
+
+from __future__ import annotations
+
+import json
+import logging
+import re
+import uuid
+from collections.abc import AsyncIterator
+
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse, StreamingResponse
+from pydantic import BaseModel, ConfigDict, Field, StrictStr, field_validator
+
+from backend.config import ConfigurationUnavailable, get_settings, require_api_key
+from backend.gemini_client import GeminiClient
+from backend.index_store import IndexStore
+from backend.retrieval import HybridRetriever
+from backend.service import RagService, ServerSentEvent
+
+
+LOGGER = logging.getLogger(__name__)
+_CONTROL = re.compile(r"[\x00-\x1f\x7f-\x9f]")
+MAX_QUERY_LENGTH = 2_000
+
+
+class QueryRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True, str_strip_whitespace=True)
+
+    query: StrictStr = Field(min_length=1, max_length=MAX_QUERY_LENGTH)
+
+    @field_validator("query")
+    @classmethod
+    def safe_query(cls, value: str) -> str:
+        if not value.strip() or _CONTROL.search(value):
+            raise ValueError("query contains invalid characters")
+        return value.strip()
+
+
+def create_app(*, store: object | None = None, retriever: object | None = None, gemini: object | None = None) -> FastAPI:
+    app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
+    settings = get_settings()
+    if store is None:
+        try:
+            store = IndexStore.load(settings.artifact_path)
+        except ValueError:
+            store = None
+    if retriever is None and store is not None:
+        retriever = HybridRetriever(store)
+    if gemini is None and store is not None:
+        try:
+            gemini = GeminiClient(require_api_key(settings), store.artifact.embedding_model)
+        except (ConfigurationUnavailable, ValueError):
+            gemini = None
+    app.state.gateway = RagService(retriever, gemini, settings.embedding_timeout_seconds, settings.generation_timeout_seconds, settings.total_timeout_seconds) if retriever is not None and gemini is not None else None
+    app.state.store = store
+
+    @app.get("/api/health")
+    async def health() -> JSONResponse:
+        active = app.state.store
+        if active is None:
+            return JSONResponse({"ready": False, "status": "index_unavailable"})
+        documents = active.artifact.documents
+        return JSONResponse({"ready": True, "schema_version": active.artifact.schema_version, "corpus_version": active.artifact.corpus_version, "documents": len(documents), "pages": sum(document.pages for document in documents), "status": "ready"})
+
+    @app.get("/api/corpus")
+    async def corpus() -> JSONResponse:
+        active = app.state.store
+        if active is None:
+            return _safe_error(503, "index_unavailable", "The study corpus is not ready.")
+        return JSONResponse({"documents": [document.model_dump() if hasattr(document, "model_dump") else {name: getattr(document, name) for name in ("document_id", "filename", "title", "semester", "pages", "topics", "sha256", "download_url")} for document in active.artifact.documents]})
+
+    @app.post("/api/query", response_model=None)
+    async def query(request: Request):
+        request_id = uuid.uuid4().hex
+        content_type = request.headers.get("content-type", "")
+        if content_type.split(";", 1)[0].strip().lower() != "application/json":
+            return _safe_error(415, "invalid_request", "Content type must be application/json.", request_id)
+        try:
+            body = await request.json()
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            return _safe_error(400, "invalid_request", "Request JSON is malformed.", request_id)
+        try:
+            payload = QueryRequest.model_validate(body)
+        except Exception:
+            return _safe_error(422, "invalid_request", "Query must be a single safe text field.", request_id)
+        gateway = app.state.gateway
+        if gateway is None:
+            return _safe_error(503, "index_unavailable", "The study service is temporarily unavailable.", request_id)
+        return StreamingResponse(_encode_events(gateway.stream_query(payload.query, request_id)), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "X-Request-ID": request_id})
+
+    return app
+
+
+async def _encode_events(events: AsyncIterator[ServerSentEvent]) -> AsyncIterator[bytes]:
+    async for event in events:
+        yield f"event: {event.name}\ndata: {json.dumps(event.data, ensure_ascii=False, separators=(',', ':'))}\n\n".encode("utf-8")
+
+
+def _safe_error(status: int, code: str, message: str, request_id: str | None = None) -> JSONResponse:
+    payload: dict[str, object] = {"code": code, "message": message}
+    if request_id:
+        payload["request_id"] = request_id
+    return JSONResponse(payload, status_code=status)
+
+
+app = create_app()
