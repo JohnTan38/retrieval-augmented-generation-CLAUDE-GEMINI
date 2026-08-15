@@ -215,14 +215,14 @@ test('aborts a live request when the workspace unmounts', async () => {
   expect(requestSignal.aborted).toBe(true)
 })
 
-test('restores focus to a mobile citation after its evidence sheet closes', async () => {
+test('restores focus to the exact activating mobile citation among duplicate markers', async () => {
   Object.defineProperty(window, 'matchMedia', {
     configurable: true,
     value: vi.fn().mockReturnValue({ matches: true, addEventListener: vi.fn(), removeEventListener: vi.fn() }),
   })
   vi.stubGlobal('fetch', vi.fn().mockResolvedValue(sseResponse([
     ['sources', { request_id: 'req-mobile', retrieval_mode: 'hybrid', sources: [source], timings: { retrieval_ms: 4 } }],
-    ['token', { delta: 'Mobile citation [S1].' }],
+    ['token', { delta: 'First citation [S1], then the invoking citation [S1].' }],
     ['complete', { request_id: 'req-mobile', timings: { total_ms: 8 }, cited_source_ids: ['S1'], citation_valid: true }],
   ])))
   const user = userEvent.setup()
@@ -230,12 +230,12 @@ test('restores focus to a mobile citation after its evidence sheet closes', asyn
 
   await user.type(screen.getByRole('textbox'), 'Explain mobile evidence')
   await user.click(screen.getByRole('button', { name: /find evidence/i }))
-  const citation = await screen.findByRole('button', { name: /source s1/i })
+  const citation = (await screen.findAllByRole('button', { name: /source s1/i }))[1]
   await user.click(citation)
   expect(await screen.findByRole('dialog')).toBeVisible()
 
   await user.keyboard('{Escape}')
 
   expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
-  expect(screen.getByRole('button', { name: /source s1/i })).toHaveFocus()
+  expect(screen.getAllByRole('button', { name: /source s1/i })[1]).toHaveFocus()
 })

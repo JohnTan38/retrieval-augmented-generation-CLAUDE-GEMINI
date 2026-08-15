@@ -168,10 +168,8 @@ test.each([
   ['invalid source request identifier', ['event: sources\ndata: {"request_id":7,"sources":[]}\n\n']],
   ['invalid retrieval mode', ['event: sources\ndata: {"retrieval_mode":"dense","sources":[]}\n\n']],
   ['invalid retrieval timings', ['event: sources\ndata: {"sources":[],"timings":{}}\n\n']],
-  ['event after completion', [
-    'event: sources\ndata: {"sources":[]}\n\n',
-    'event: complete\ndata: {"citation_valid":true}\n\n',
-    'event: token\ndata: {"delta":"late"}\n\n',
+  ['buffered event after completion', [
+    'event: sources\ndata: {"sources":[]}\n\nevent: complete\ndata: {"citation_valid":true}\n\nevent: token\ndata: {"delta":"late"}\n\n',
   ]],
   ['invalid completion citation flag', [
     'event: sources\ndata: {"sources":[]}\n\n',
@@ -211,6 +209,37 @@ test('accepts a terminal error event with a numeric retry delay', async () => {
   ]))
 
   expect(events).toEqual([{ type: 'error', data: { code: 'rate_limited', message: 'Wait.', retryable: true, retry_after_seconds: 4 } }])
+})
+
+test('cancels an open transport and finishes immediately after a complete event', async () => {
+  const encoder = new TextEncoder()
+  let cancelled = false
+  const response = new Response(new ReadableStream({
+    start(controller) {
+      controller.enqueue(encoder.encode([
+        'event: sources',
+        'data: {"sources":[]}',
+        '',
+        'event: complete',
+        'data: {"citation_valid":true}',
+        '',
+        '',
+      ].join('\n')))
+    },
+    cancel() { cancelled = true },
+  }))
+  const iterator = parseEventStream(response)
+
+  expect((await iterator.next()).value?.type).toBe('sources')
+  expect((await iterator.next()).value?.type).toBe('complete')
+  const finished = await Promise.race([
+    iterator.next(),
+    new Promise<'still-open'>((resolve) => setTimeout(() => resolve('still-open'), 25)),
+  ])
+
+  expect(finished).toEqual({ done: true, value: undefined })
+  expect(cancelled).toBe(true)
+  expect(response.body?.locked).toBe(false)
 })
 
 test.each([

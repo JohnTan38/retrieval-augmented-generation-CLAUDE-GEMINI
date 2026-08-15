@@ -9,22 +9,23 @@ export type EvidenceRibbonProps = {
   activeSourceId: string | null
   onSelect: (sourceId: string) => void
   activationKey?: string | number
-  restoreFocusSourceId?: string | null
+  restoreFocusCitationKey?: string | null
 }
 
 function useMobileEvidence() {
-  const [mobile, setMobile] = useState(() => typeof window !== 'undefined' && window.matchMedia?.('(max-width: 760px)').matches === true)
+  const [mobile, setMobile] = useState(false)
   useEffect(() => {
     const media = window.matchMedia?.('(max-width: 760px)')
     if (!media) return
     const update = () => setMobile(media.matches)
+    update()
     media.addEventListener('change', update)
     return () => media.removeEventListener('change', update)
   }, [])
   return mobile
 }
 
-export function EvidenceRibbon({ sources, activeSourceId, onSelect, activationKey, restoreFocusSourceId }: EvidenceRibbonProps) {
+export function EvidenceRibbon({ sources, activeSourceId, onSelect, activationKey, restoreFocusCitationKey }: EvidenceRibbonProps) {
   const mobile = useMobileEvidence()
   const [manuallyOpen, setManuallyOpen] = useState(false)
   const [dismissedActivation, setDismissedActivation] = useState<string | number | null>(null)
@@ -39,13 +40,13 @@ export function EvidenceRibbon({ sources, activeSourceId, onSelect, activationKe
   useLayoutEffect(() => {
     if (!sheetOpen) return
     if (!wasOpen.current) {
-      returnFocusRef.current = restoreFocusSourceId
-        ? document.querySelector<HTMLElement>(`[data-citation-source="${restoreFocusSourceId}"]`)
+      returnFocusRef.current = restoreFocusCitationKey
+        ? document.querySelector<HTMLElement>(`[data-citation-key="${restoreFocusCitationKey}"]`)
         : document.activeElement as HTMLElement
     }
     closeRef.current?.focus()
     wasOpen.current = true
-  }, [restoreFocusSourceId, sheetOpen])
+  }, [restoreFocusCitationKey, sheetOpen])
 
   useEffect(() => {
     if (sheetOpen || !wasOpen.current) return
@@ -59,7 +60,7 @@ export function EvidenceRibbon({ sources, activeSourceId, onSelect, activationKe
     const source = sourceRefs.current.get(activeSourceId)
     source?.focus()
     source?.scrollIntoView?.({ behavior: 'smooth', block: 'nearest' })
-  }, [activeSourceId, mobile, sheetOpen])
+  }, [activationKey, activeSourceId, mobile, sheetOpen])
 
   if (sources.length === 0) return null
 

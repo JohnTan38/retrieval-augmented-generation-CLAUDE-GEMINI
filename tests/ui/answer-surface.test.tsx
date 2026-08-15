@@ -32,9 +32,26 @@ test('turns only current source markers into citation controls', async () => {
 
   await user.click(screen.getByRole('button', { name: /source s1/i }))
 
-  expect(onCitationActivate).toHaveBeenCalledWith('S1')
+  expect(onCitationActivate).toHaveBeenCalledWith('S1', 'S1-0')
   expect(screen.getByText(/but \[S9\] is unknown/)).toBeVisible()
   expect(screen.queryByRole('button', { name: /source s9/i })).not.toBeInTheDocument()
+})
+
+test('identifies the exact occurrence when a source marker is repeated', async () => {
+  const onCitationActivate = vi.fn()
+  const user = userEvent.setup()
+  render(
+    <AnswerSurface
+      answer="First support [S1], repeated support [S1]."
+      citedSourceIds={['S1']}
+      status="complete"
+      onCitationActivate={onCitationActivate}
+    />,
+  )
+
+  await user.click(screen.getAllByRole('button', { name: /source s1/i })[1])
+
+  expect(onCitationActivate).toHaveBeenCalledWith('S1', 'S1-1')
 })
 
 test('shows an integrity warning when completion marks citations invalid', () => {

@@ -8,7 +8,7 @@ export type AnswerSurfaceProps = {
   citedSourceIds: string[]
   status: WorkspaceState
   citationValid?: boolean
-  onCitationActivate?: (sourceId: string) => void
+  onCitationActivate?: (sourceId: string, citationKey: string) => void
 }
 
 export function AnswerSurface({ answer, citedSourceIds, status, citationValid = true, onCitationActivate }: AnswerSurfaceProps) {

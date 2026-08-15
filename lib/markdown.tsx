@@ -26,6 +26,7 @@ const SANITIZE_SCHEMA = {
 
 function citationPlugin(sourceIds: Set<string>) {
   return () => (tree: MarkdownNode) => {
+    const sourceOccurrences = new Map<string, number>()
     const visit = (node: MarkdownNode) => {
       if (!node.children || node.type === 'link') return
       node.children = node.children.flatMap((child) => {
@@ -39,9 +40,13 @@ function citationPlugin(sourceIds: Set<string>) {
           const index = match.index!
           if (index > cursor) parts.push({ type: 'text', value: child.value.slice(cursor, index) })
           const sourceId = match[1]
-          parts.push(sourceIds.has(sourceId)
-            ? { type: 'link', url: `#source-${sourceId}`, children: [{ type: 'text', value: match[0] }] }
-            : { type: 'text', value: match[0] })
+          if (sourceIds.has(sourceId)) {
+            const occurrence = sourceOccurrences.get(sourceId) ?? 0
+            sourceOccurrences.set(sourceId, occurrence + 1)
+            parts.push({ type: 'link', url: `#citation-${sourceId}-${occurrence}`, children: [{ type: 'text', value: match[0] }] })
+          } else {
+            parts.push({ type: 'text', value: match[0] })
+          }
           cursor = index + match[0].length
         }
         if (cursor === 0) return [child]
@@ -56,7 +61,7 @@ function citationPlugin(sourceIds: Set<string>) {
 type SafeMarkdownProps = {
   children: string
   sourceIds: string[]
-  onCitationActivate?: (sourceId: string) => void
+  onCitationActivate?: (sourceId: string, citationKey: string) => void
 }
 
 export function SafeMarkdown({ children, sourceIds, onCitationActivate }: SafeMarkdownProps) {
@@ -68,9 +73,10 @@ export function SafeMarkdown({ children, sourceIds, onCitationActivate }: SafeMa
       rehypePlugins={[[rehypeSanitize, SANITIZE_SCHEMA]]}
       components={{
         a: ({ href, children: linkChildren, ...props }: ComponentPropsWithoutRef<'a'>) => {
-          const match = href?.match(/^#source-(S[1-9][0-9]*)$/)
+          const match = href?.match(/^#citation-(S[1-9][0-9]*)-([0-9]+)$/)
           if (match && validSources.has(match[1])) {
-            return <button type="button" className="citation-control" data-citation-source={match[1]} aria-label={`Source ${match[1]}`} onClick={() => onCitationActivate?.(match[1])}>{linkChildren}</button>
+            const citationKey = `${match[1]}-${match[2]}`
+            return <button type="button" className="citation-control" data-citation-key={citationKey} aria-label={`Source ${match[1]}`} onClick={() => onCitationActivate?.(match[1], citationKey)}>{linkChildren}</button>
           }
           return <a href={href} {...props}>{linkChildren}</a>
         },

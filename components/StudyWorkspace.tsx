@@ -73,7 +73,7 @@ export function StudyWorkspace({ documents = [] }: StudyWorkspaceProps) {
   const [evidenceActivation, setEvidenceActivation] = useState(0)
   const [citationValid, setCitationValid] = useState(true)
   const [failure, setFailure] = useState<Failure | null>(null)
-  const [citationOriginId, setCitationOriginId] = useState<string | null>(null)
+  const [citationOriginKey, setCitationOriginKey] = useState<string | null>(null)
   const lastQuery = useRef('')
   const requestSequence = useRef(0)
   const controllerRef = useRef<AbortController | null>(null)
@@ -97,7 +97,7 @@ export function StudyWorkspace({ documents = [] }: StudyWorkspaceProps) {
     setEvidenceActivation(0)
     setCitationValid(true)
     setFailure(null)
-    setCitationOriginId(null)
+    setCitationOriginKey(null)
 
     let receivedSources: SourceEvidence[] = []
     let retrievalMode: 'hybrid' | 'lexical_degraded' = 'hybrid'
@@ -160,8 +160,8 @@ export function StudyWorkspace({ documents = [] }: StudyWorkspaceProps) {
   const showAnswer = answer.length > 0 || state === 'retrieving' || state === 'streaming' || state === 'degraded'
   const showFailure = state === 'provider-error' || state === 'rate-limited' || state === 'offline'
 
-  function activateCitation(sourceId: string) {
-    setCitationOriginId(sourceId)
+  function activateCitation(sourceId: string, citationKey: string) {
+    setCitationOriginKey(citationKey)
     setActiveSourceId(sourceId)
     setEvidenceActivation((current) => current + 1)
   }
@@ -229,7 +229,7 @@ export function StudyWorkspace({ documents = [] }: StudyWorkspaceProps) {
               onCitationActivate={activateCitation}
             />
           ) : null}
-          <EvidenceRibbon sources={sources} activeSourceId={activeSourceId} onSelect={setActiveSourceId} activationKey={evidenceActivation} restoreFocusSourceId={citationOriginId} />
+          <EvidenceRibbon sources={sources} activeSourceId={activeSourceId} onSelect={setActiveSourceId} activationKey={evidenceActivation} restoreFocusCitationKey={citationOriginKey} />
         </section>
       ) : null}
 

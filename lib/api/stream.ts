@@ -163,9 +163,14 @@ export async function* parseEventStream(
         blocks.push(buffer)
         buffer = ''
       }
-      for (const block of blocks) {
+      for (const [index, block] of blocks.entries()) {
         const event = accept(block)
         if (event) yield event
+        if (terminalSeen) {
+          for (const trailingBlock of blocks.slice(index + 1)) accept(trailingBlock)
+          await reader.cancel()
+          return
+        }
       }
       if (done) break
     }
