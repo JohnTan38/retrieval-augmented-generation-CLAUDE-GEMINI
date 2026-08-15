@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react'
+import { fireEvent, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { vi } from 'vitest'
 import { QueryComposer } from '@/components/QueryComposer'
@@ -15,4 +15,13 @@ test('submits a trimmed study question and blocks empty input', async () => {
   await user.click(button)
 
   expect(onSubmit).toHaveBeenCalledWith('Explain Arnett')
+})
+
+test('does not submit a whitespace-only question when the form is submitted directly', () => {
+  const onSubmit = vi.fn()
+  const { container } = render(<QueryComposer disabled={false} onSubmit={onSubmit} />)
+
+  fireEvent.submit(container.querySelector('form')!)
+
+  expect(onSubmit).not.toHaveBeenCalled()
 })

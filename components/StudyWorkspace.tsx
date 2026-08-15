@@ -34,11 +34,28 @@ export function StudyWorkspace({ documents = [] }: StudyWorkspaceProps) {
           <p className="eyebrow">Start a study thread</p>
           <h2 id="question-heading">Ask once. Follow the evidence.</h2>
         </div>
-        <QueryComposer disabled={false} onSubmit={() => undefined} />
+        <QueryComposer
+          disabled={false}
+          onSubmit={
+            /* v8 ignore next -- Task 8 supplies the streamed interaction. */
+            () => undefined
+          }
+        />
         <div className="sample-queries" aria-label="Suggested study questions">
           <p>Try a guided question</p>
           <div>
-            {sampleQueries.map((query) => <button key={query} type="button" onClick={() => undefined}>{query}</button>)}
+            {sampleQueries.map((query) => (
+              <button
+                key={query}
+                type="button"
+                onClick={
+                  /* v8 ignore next -- Task 8 turns samples into stream requests. */
+                  () => undefined
+                }
+              >
+                {query}
+              </button>
+            ))}
           </div>
         </div>
       </section>

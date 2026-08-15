@@ -11,6 +11,7 @@ export default defineConfig({
   resolve: {
     alias: {
       '@': rootDir,
+      'server-only': path.join(rootDir, 'node_modules/next/dist/compiled/server-only/empty.js'),
     },
   },
   test: {
@@ -27,6 +28,7 @@ export default defineConfig({
         '**/*.config.*',
         '**/*.d.ts',
         '**/*.css',
+        'lib/api/types.ts',
         '.next/**',
         'dist/**',
         'tests/**',
