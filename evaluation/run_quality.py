@@ -58,6 +58,19 @@ class RagasMetric(Protocol):
 ScoreSamples = Callable[[list[EvaluationSample]], QualityReport]
 
 
+@dataclass(frozen=True)
+class RagasRuntime:
+    """Lazy evaluation-only constructors from the RAGAS 0.4.3 integration surface."""
+
+    async_openai: Callable[..., Any]
+    genai_client: Callable[..., Any]
+    llm_factory: Callable[..., Any]
+    embedding_factory: Callable[..., Any]
+    faithfulness: Callable[..., RagasMetric]
+    answer_relevancy: Callable[..., RagasMetric]
+    context_precision: Callable[..., RagasMetric]
+
+
 def load_golden_queries(path: Path) -> list[GoldenQuery]:
     """Load and strictly validate the fixed seven-query evaluation set."""
 
@@ -257,9 +270,8 @@ async def evaluate_with_metrics(
     )
 
 
-def build_ragas_scorer(api_key: str, judge_model: str) -> ScoreSamples:
-    """Build an isolated Gemini-backed scorer using RAGAS 0.4 collections APIs."""
-
+def _load_ragas_runtime() -> RagasRuntime:
+    """Import evaluation-only packages without adding them to the production bundle."""
     from google import genai
     from openai import AsyncOpenAI
     from ragas.embeddings.base import embedding_factory
@@ -270,18 +282,38 @@ def build_ragas_scorer(api_key: str, judge_model: str) -> ScoreSamples:
         Faithfulness,
     )
 
-    judge_client = AsyncOpenAI(api_key=api_key, base_url=GEMINI_OPENAI_BASE_URL)
-    embedding_client = genai.Client(api_key=api_key)
-    llm = llm_factory(judge_model, provider="openai", client=judge_client)
-    embeddings = embedding_factory(
+    return RagasRuntime(
+        async_openai=AsyncOpenAI,
+        genai_client=genai.Client,
+        llm_factory=llm_factory,
+        embedding_factory=embedding_factory,
+        faithfulness=Faithfulness,
+        answer_relevancy=AnswerRelevancy,
+        context_precision=ContextPrecisionWithoutReference,
+    )
+
+
+def build_ragas_scorer(
+    api_key: str,
+    judge_model: str,
+    *,
+    runtime: RagasRuntime | None = None,
+) -> ScoreSamples:
+    """Build an isolated Gemini-backed scorer using RAGAS 0.4 collections APIs."""
+
+    runtime = runtime or _load_ragas_runtime()
+    judge_client = runtime.async_openai(api_key=api_key, base_url=GEMINI_OPENAI_BASE_URL)
+    embedding_client = runtime.genai_client(api_key=api_key)
+    llm = runtime.llm_factory(judge_model, provider="openai", client=judge_client)
+    embeddings = runtime.embedding_factory(
         "google",
         model="gemini-embedding-001",
         client=embedding_client,
         interface="modern",
     )
-    faithfulness = Faithfulness(llm=llm)
-    relevance = AnswerRelevancy(llm=llm, embeddings=embeddings)
-    precision = ContextPrecisionWithoutReference(llm=llm)
+    faithfulness = runtime.faithfulness(llm=llm)
+    relevance = runtime.answer_relevancy(llm=llm, embeddings=embeddings)
+    precision = runtime.context_precision(llm=llm)
 
     def score(samples: list[EvaluationSample]) -> QualityReport:
         async def evaluate_and_close() -> QualityReport:
@@ -366,5 +398,5 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
 
 
-if __name__ == "__main__":
+if __name__ == "__main__":  # pragma: no cover - exercised through main() unit tests
     raise SystemExit(main())

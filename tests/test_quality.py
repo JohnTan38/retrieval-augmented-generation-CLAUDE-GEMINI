@@ -1,13 +1,16 @@
 import math
 import json
+import sys
 from pathlib import Path
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
+from unittest.mock import ANY
 
 import httpx
 import pytest
 from pydantic import ValidationError
 
 from evaluation.quality import QualityReport, assert_quality_thresholds
+from evaluation import run_quality as quality_runner
 from evaluation.run_quality import (
     EvaluationSample,
     evaluate_with_metrics,
@@ -90,6 +93,25 @@ def complete_sse(*, citation_valid: bool = True) -> str:
     return "".join(f"event: {name}\ndata: {json.dumps(data)}\n\n" for name, data in events)
 
 
+def golden_entries() -> list[dict[str, object]]:
+    return [
+        {
+            "id": f"query-{index}",
+            "query": f"Study question {index}",
+            "expected_documents": ["jan-2026"],
+            "expected_topic": "identity",
+            "expected_page_range": [12, 15],
+        }
+        for index in range(7)
+    ]
+
+
+def fetch_body(body: str, *, status: int = 200) -> EvaluationSample:
+    transport = httpx.MockTransport(lambda _: httpx.Response(status, text=body))
+    with httpx.Client(transport=transport) as client:
+        return fetch_query(client, "https://study.invalid/", "query-id", "Question")
+
+
 def test_fetch_query_calls_the_real_sse_contract_and_collects_one_safe_sample() -> None:
     def endpoint(request: httpx.Request) -> httpx.Response:
         assert request.method == "POST"
@@ -112,11 +134,31 @@ def test_fetch_query_calls_the_real_sse_contract_and_collects_one_safe_sample() 
     )
 
 
+def test_event_parser_accepts_crlf_multiline_data_and_ignores_empty_blocks() -> None:
+    blocks = list(quality_runner._event_blocks('\r\n\r\n: keepalive\r\nevent: token\r\ndata: {"delta":\r\ndata: "answer"}\r\n\r\n'))
+    assert blocks == [("token", {"delta": "answer"})]
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "event: token\n\n",
+        'data: {"delta":"answer"}\n\n',
+        "event: token\ndata: not-json\n\n",
+        "event: token\ndata: []\n\n",
+    ],
+)
+def test_event_parser_rejects_malformed_blocks(body: str) -> None:
+    with pytest.raises(RuntimeError, match="invalid event stream"):
+        list(quality_runner._event_blocks(body))
+
+
 @pytest.mark.parametrize(
     "body",
     [
         'event: token\ndata: {"delta":"out of order"}\n\n',
         'event: sources\ndata: {"sources":[]}\n\n',
+        'event: sources\ndata: {"request_id":"r","sources":[]}\n\n',
         'event: error\ndata: {"code":"generation_timeout","message":"Timed out","retryable":true}\n\n',
     ],
 )
@@ -127,18 +169,73 @@ def test_fetch_query_rejects_incomplete_or_error_streams(body: str) -> None:
             fetch_query(client, "https://study.invalid", "bad", "Question")
 
 
+def test_fetch_query_propagates_http_failures() -> None:
+    with pytest.raises(httpx.HTTPStatusError):
+        fetch_body("unavailable", status=503)
+
+
+@pytest.mark.parametrize(
+    ("body", "message"),
+    [
+        ('event: sources\ndata: {"request_id":7,"sources":[]}\n\n', "invalid sources"),
+        ('event: sources\ndata: {"request_id":"r","sources":{}}\n\n', "invalid sources"),
+        (
+            'event: sources\ndata: {"request_id":"r","sources":[]}\n\n'
+            'event: sources\ndata: {"request_id":"r","sources":[]}\n\n',
+            "invalid sources",
+        ),
+        ('event: sources\ndata: {"request_id":"r","sources":[7]}\n\n', "invalid source evidence"),
+        ('event: sources\ndata: {"request_id":"r","sources":[{"source_id":"bad","excerpt":"ok"}]}\n\n', "invalid source evidence"),
+        ('event: sources\ndata: {"request_id":"r","sources":[{"source_id":"S1","excerpt":""}]}\n\n', "invalid source evidence"),
+        (
+            'event: sources\ndata: {"request_id":"r","sources":[{"source_id":"S1","excerpt":"one"},{"source_id":"S1","excerpt":"two"}]}\n\n',
+            "duplicate source evidence",
+        ),
+        ('event: token\ndata: {"delta":"early"}\n\n', "invalid token"),
+        ('event: sources\ndata: {"request_id":"r","sources":[]}\n\nevent: token\ndata: {"delta":7}\n\n', "invalid token"),
+        ('event: complete\ndata: {"cited_source_ids":[],"citation_valid":true}\n\n', "invalid complete"),
+        ('event: sources\ndata: {"request_id":"r","sources":[]}\n\nevent: complete\ndata: {"cited_source_ids":{},"citation_valid":true}\n\n', "invalid complete"),
+        ('event: sources\ndata: {"request_id":"r","sources":[]}\n\nevent: complete\ndata: {"cited_source_ids":[7],"citation_valid":true}\n\n', "invalid complete"),
+        ('event: sources\ndata: {"request_id":"r","sources":[]}\n\nevent: complete\ndata: {"cited_source_ids":[],"citation_valid":"yes"}\n\n', "invalid complete"),
+        ('event: mystery\ndata: {}\n\n', "unknown event"),
+        ('event: error\ndata: {"message":7}\n\n', "reported an error"),
+        ('event: error\ndata: {"message":""}\n\n', "reported an error"),
+        (
+            'event: sources\ndata: {"request_id":"r","sources":[]}\n\nevent: complete\ndata: {"cited_source_ids":[],"citation_valid":true}\n\nevent: token\ndata: {"delta":"late"}\n\n',
+            "events after completion",
+        ),
+    ],
+)
+def test_fetch_query_rejects_each_invalid_contract_shape(body: str, message: str) -> None:
+    with pytest.raises(RuntimeError, match=message):
+        fetch_body(body)
+
+
+@pytest.mark.parametrize(
+    ("answer", "cited", "server_valid"),
+    [
+        ("", [], True),
+        ("uncited answer", [], True),
+        ("answer [S1]", ["S2"], True),
+        ("answer [S2]", ["S2"], True),
+        ("answer [S1]", ["S1"], False),
+    ],
+)
+def test_fetch_query_marks_every_invalid_citation_relationship(
+    answer: str, cited: list[str], server_valid: bool
+) -> None:
+    source = {"source_id": "S1", "excerpt": "Evidence"}
+    body = (
+        f'event: sources\ndata: {json.dumps({"request_id": "r", "sources": [source]})}\n\n'
+        f'event: token\ndata: {json.dumps({"delta": answer})}\n\n'
+        f'event: complete\ndata: {json.dumps({"cited_source_ids": cited, "citation_valid": server_valid})}\n\n'
+    )
+    assert fetch_body(body).citation_valid is False
+
+
 def test_load_golden_queries_requires_exactly_seven_unique_safe_entries(tmp_path: Path) -> None:
     golden_path = tmp_path / "golden.json"
-    entries = [
-        {
-            "id": f"query-{index}",
-            "query": f"Study question {index}",
-            "expected_documents": ["jan-2026"],
-            "expected_topic": "identity",
-            "expected_page_range": [12, 15],
-        }
-        for index in range(7)
-    ]
+    entries = golden_entries()
     golden_path.write_text(json.dumps(entries), encoding="utf-8")
 
     loaded = load_golden_queries(golden_path)
@@ -147,6 +244,45 @@ def test_load_golden_queries_requires_exactly_seven_unique_safe_entries(tmp_path
     entries[-1]["id"] = "query-0"
     golden_path.write_text(json.dumps(entries), encoding="utf-8")
     with pytest.raises(ValueError, match="seven unique"):
+        load_golden_queries(golden_path)
+
+
+@pytest.mark.parametrize(
+    "replacement",
+    [
+        None,
+        {"id": 7, "query": "q", "expected_documents": ["doc"], "expected_topic": "t", "expected_page_range": [1, 2]},
+        {"id": "", "query": "q", "expected_documents": ["doc"], "expected_topic": "t", "expected_page_range": [1, 2]},
+        {"id": "new", "query": 7, "expected_documents": ["doc"], "expected_topic": "t", "expected_page_range": [1, 2]},
+        {"id": "new", "query": "", "expected_documents": ["doc"], "expected_topic": "t", "expected_page_range": [1, 2]},
+        {"id": "new", "query": "q", "expected_documents": "doc", "expected_topic": "t", "expected_page_range": [1, 2]},
+        {"id": "new", "query": "q", "expected_documents": [], "expected_topic": "t", "expected_page_range": [1, 2]},
+        {"id": "new", "query": "q", "expected_documents": [7], "expected_topic": "t", "expected_page_range": [1, 2]},
+        {"id": "new", "query": "q", "expected_documents": [""], "expected_topic": "t", "expected_page_range": [1, 2]},
+        {"id": "new", "query": "q", "expected_documents": ["doc"], "expected_topic": 7, "expected_page_range": [1, 2]},
+        {"id": "new", "query": "q", "expected_documents": ["doc"], "expected_topic": "", "expected_page_range": [1, 2]},
+        {"id": "new", "query": "q", "expected_documents": ["doc"], "expected_topic": "t", "expected_page_range": "1-2"},
+        {"id": "new", "query": "q", "expected_documents": ["doc"], "expected_topic": "t", "expected_page_range": [1]},
+        {"id": "new", "query": "q", "expected_documents": ["doc"], "expected_topic": "t", "expected_page_range": [True, 2]},
+        {"id": "new", "query": "q", "expected_documents": ["doc"], "expected_topic": "t", "expected_page_range": [0, 2]},
+        {"id": "new", "query": "q", "expected_documents": ["doc"], "expected_topic": "t", "expected_page_range": [3, 2]},
+    ],
+)
+def test_load_golden_queries_rejects_each_unsafe_entry_shape(tmp_path: Path, replacement: object) -> None:
+    entries = golden_entries()
+    entries[0] = replacement  # type: ignore[assignment]
+    golden_path = tmp_path / "golden.json"
+    golden_path.write_text(json.dumps(entries), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="seven unique"):
+        load_golden_queries(golden_path)
+
+
+@pytest.mark.parametrize("payload", [{}, [], golden_entries()[:6]])
+def test_load_golden_queries_rejects_non_list_or_wrong_count(tmp_path: Path, payload: object) -> None:
+    golden_path = tmp_path / "golden.json"
+    golden_path.write_text(json.dumps(payload), encoding="utf-8")
+    with pytest.raises(ValueError, match="exactly seven"):
         load_golden_queries(golden_path)
 
 
@@ -159,6 +295,17 @@ class ContractMetric:
         if set(kwargs) != self.required_keys or any(not value for value in kwargs.values()):
             raise AssertionError(f"unexpected RAGAS call: {kwargs}")
         return SimpleNamespace(value=next(self.values))
+
+
+@pytest.mark.parametrize("value", [True, "0.9", None, math.nan, math.inf, -math.inf])
+def test_metric_value_rejects_non_numeric_or_nonfinite_results(value: object) -> None:
+    with pytest.raises(ValueError, match="invalid metric score"):
+        quality_runner._metric_value(SimpleNamespace(value=value))
+
+
+@pytest.mark.parametrize(("value", "expected"), [(1, 1.0), (0.75, 0.75)])
+def test_metric_value_accepts_finite_numeric_results(value: object, expected: float) -> None:
+    assert quality_runner._metric_value(SimpleNamespace(value=value)) == expected
 
 
 @pytest.mark.asyncio
@@ -181,6 +328,174 @@ async def test_evaluate_with_metrics_uses_current_ragas_contracts_and_aggregates
         context_precision=0.8,
         citation_validity=0.5,
     )
+
+
+@pytest.mark.asyncio
+async def test_evaluate_with_metrics_rejects_an_empty_sample_set() -> None:
+    metric = ContractMetric(set(), [])
+    with pytest.raises(ValueError, match="requires samples"):
+        await evaluate_with_metrics(
+            [],
+            faithfulness=metric,
+            answer_relevance=metric,
+            context_precision=metric,
+        )
+
+
+def install_fake_ragas_modules(monkeypatch: pytest.MonkeyPatch) -> dict[str, object]:
+    symbols: dict[str, object] = {}
+
+    class AsyncOpenAI:
+        pass
+
+    class GenaiClient:
+        pass
+
+    def llm_factory(*args: object, **kwargs: object) -> object:
+        return (args, kwargs)
+
+    def embedding_factory(*args: object, **kwargs: object) -> object:
+        return (args, kwargs)
+
+    class Faithfulness:
+        pass
+
+    class AnswerRelevancy:
+        pass
+
+    class ContextPrecisionWithoutReference:
+        pass
+
+    symbols.update(locals())
+    google = ModuleType("google")
+    genai = ModuleType("google.genai")
+    genai.Client = GenaiClient  # type: ignore[attr-defined]
+    google.genai = genai  # type: ignore[attr-defined]
+    openai = ModuleType("openai")
+    openai.AsyncOpenAI = AsyncOpenAI  # type: ignore[attr-defined]
+    ragas = ModuleType("ragas")
+    ragas_embeddings = ModuleType("ragas.embeddings")
+    ragas_embeddings_base = ModuleType("ragas.embeddings.base")
+    ragas_embeddings_base.embedding_factory = embedding_factory  # type: ignore[attr-defined]
+    ragas_llms = ModuleType("ragas.llms")
+    ragas_llms_base = ModuleType("ragas.llms.base")
+    ragas_llms_base.llm_factory = llm_factory  # type: ignore[attr-defined]
+    ragas_metrics = ModuleType("ragas.metrics")
+    ragas_collections = ModuleType("ragas.metrics.collections")
+    ragas_collections.Faithfulness = Faithfulness  # type: ignore[attr-defined]
+    ragas_collections.AnswerRelevancy = AnswerRelevancy  # type: ignore[attr-defined]
+    ragas_collections.ContextPrecisionWithoutReference = ContextPrecisionWithoutReference  # type: ignore[attr-defined]
+    modules = {
+        "google": google,
+        "google.genai": genai,
+        "openai": openai,
+        "ragas": ragas,
+        "ragas.embeddings": ragas_embeddings,
+        "ragas.embeddings.base": ragas_embeddings_base,
+        "ragas.llms": ragas_llms,
+        "ragas.llms.base": ragas_llms_base,
+        "ragas.metrics": ragas_metrics,
+        "ragas.metrics.collections": ragas_collections,
+    }
+    for name, module in modules.items():
+        monkeypatch.setitem(sys.modules, name, module)
+    return symbols
+
+
+def test_load_ragas_runtime_resolves_the_current_0_4_3_api_symbols(monkeypatch: pytest.MonkeyPatch) -> None:
+    symbols = install_fake_ragas_modules(monkeypatch)
+
+    runtime = quality_runner._load_ragas_runtime()
+
+    assert runtime.async_openai is symbols["AsyncOpenAI"]
+    assert runtime.genai_client is symbols["GenaiClient"]
+    assert runtime.llm_factory is symbols["llm_factory"]
+    assert runtime.embedding_factory is symbols["embedding_factory"]
+    assert runtime.faithfulness is symbols["Faithfulness"]
+    assert runtime.answer_relevancy is symbols["AnswerRelevancy"]
+    assert runtime.context_precision is symbols["ContextPrecisionWithoutReference"]
+
+
+def scorer_runtime(events: list[object], *, metric_error: Exception | None = None) -> object:
+    class JudgeClient:
+        def __init__(self, **kwargs: object) -> None:
+            events.append(("judge-client", kwargs))
+
+        async def close(self) -> None:
+            events.append("judge-close")
+
+    class EmbeddingClient:
+        def __init__(self, **kwargs: object) -> None:
+            events.append(("embedding-client", kwargs))
+
+        def close(self) -> None:
+            events.append("embedding-close")
+
+    class Metric:
+        def __init__(self, name: str, **kwargs: object) -> None:
+            self.name = name
+            events.append((name, kwargs))
+
+        async def ascore(self, **kwargs: object) -> SimpleNamespace:
+            events.append((f"{self.name}-score", kwargs))
+            if metric_error is not None:
+                raise metric_error
+            values = {"faithfulness": 0.85, "relevance": 0.8, "precision": 0.8}
+            return SimpleNamespace(value=values[self.name])
+
+    def llm_factory(*args: object, **kwargs: object) -> str:
+        events.append(("llm-factory", args, kwargs))
+        return "llm"
+
+    def embedding_factory(*args: object, **kwargs: object) -> str:
+        events.append(("embedding-factory", args, kwargs))
+        return "embeddings"
+
+    return quality_runner.RagasRuntime(
+        async_openai=JudgeClient,
+        genai_client=EmbeddingClient,
+        llm_factory=llm_factory,
+        embedding_factory=embedding_factory,
+        faithfulness=lambda **kwargs: Metric("faithfulness", **kwargs),
+        answer_relevancy=lambda **kwargs: Metric("relevance", **kwargs),
+        context_precision=lambda **kwargs: Metric("precision", **kwargs),
+    )
+
+
+def one_evaluation_sample() -> EvaluationSample:
+    return EvaluationSample("q1", "Question", "Answer [S1]", ["Evidence"], ["S1"], ["S1"], True)
+
+
+def test_build_ragas_scorer_constructs_current_clients_metrics_and_closes_them() -> None:
+    events: list[object] = []
+    scorer = quality_runner.build_ragas_scorer("secret-key", "gemini-judge", runtime=scorer_runtime(events))
+
+    assert scorer([one_evaluation_sample()]) == required_report()
+    assert events == [
+        ("judge-client", {"api_key": "secret-key", "base_url": quality_runner.GEMINI_OPENAI_BASE_URL}),
+        ("embedding-client", {"api_key": "secret-key"}),
+        ("llm-factory", ("gemini-judge",), {"provider": "openai", "client": ANY}),
+        ("embedding-factory", ("google",), {"model": "gemini-embedding-001", "client": ANY, "interface": "modern"}),
+        ("faithfulness", {"llm": "llm"}),
+        ("relevance", {"llm": "llm", "embeddings": "embeddings"}),
+        ("precision", {"llm": "llm"}),
+        ("faithfulness-score", {"user_input": "Question", "response": "Answer [S1]", "retrieved_contexts": ["Evidence"]}),
+        ("relevance-score", {"user_input": "Question", "response": "Answer [S1]"}),
+        ("precision-score", {"user_input": "Question", "response": "Answer [S1]", "retrieved_contexts": ["Evidence"]}),
+        "judge-close",
+        "embedding-close",
+    ]
+
+
+def test_build_ragas_scorer_closes_both_clients_when_scoring_fails() -> None:
+    events: list[object] = []
+    scorer = quality_runner.build_ragas_scorer(
+        "secret-key", "gemini-judge", runtime=scorer_runtime(events, metric_error=RuntimeError("judge failed"))
+    )
+
+    with pytest.raises(RuntimeError, match="judge failed"):
+        scorer([one_evaluation_sample()])
+    assert events[-2:] == ["judge-close", "embedding-close"]
 
 
 def test_run_evaluation_writes_only_aggregate_scores_and_safe_identifiers(tmp_path: Path) -> None:
@@ -250,3 +565,72 @@ def test_run_evaluation_writes_failed_aggregates_and_exits_nonzero(tmp_path: Pat
     assert exit_code == 1
     assert payload["passed"] is False
     assert payload["scores"]["faithfulness"] == 0.84
+
+
+def test_parse_args_applies_defaults_and_accepts_explicit_overrides() -> None:
+    defaults = quality_runner.parse_args(["--base-url", "https://study.invalid", "--output", "result.json"])
+    assert defaults.base_url == "https://study.invalid"
+    assert defaults.output == Path("result.json")
+    assert defaults.golden == Path("evaluation/golden-queries.json")
+    assert defaults.judge_model == quality_runner.DEFAULT_JUDGE_MODEL
+
+    custom = quality_runner.parse_args([
+        "--base-url", "http://127.0.0.1:3000/", "--output", "custom.json",
+        "--golden", "custom-golden.json", "--judge-model", "custom-judge",
+    ])
+    assert custom.golden == Path("custom-golden.json")
+    assert custom.judge_model == "custom-judge"
+
+
+def test_main_rejects_a_missing_or_blank_live_key(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("GEMINI_API_KEY", "   ")
+    with pytest.raises(SystemExit, match="GEMINI_API_KEY is required"):
+        quality_runner.main(["--base-url", "https://study.invalid", "--output", str(tmp_path / "result.json")])
+
+
+def test_main_builds_the_scorer_and_runs_with_a_managed_http_client(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    calls: list[object] = []
+    scorer = lambda _: required_report()  # noqa: E731
+
+    class ClientContext:
+        def __enter__(self) -> str:
+            calls.append("client-enter")
+            return "managed-client"
+
+        def __exit__(self, *args: object) -> None:
+            calls.append(("client-exit", args))
+
+    def build(api_key: str, judge_model: str) -> object:
+        calls.append(("build", api_key, judge_model))
+        return scorer
+
+    def run(**kwargs: object) -> int:
+        calls.append(("run", kwargs))
+        return 17
+
+    monkeypatch.setenv("GEMINI_API_KEY", " authorized-key ")
+    monkeypatch.setattr(quality_runner, "build_ragas_scorer", build)
+    monkeypatch.setattr(quality_runner.httpx, "Client", ClientContext)
+    monkeypatch.setattr(quality_runner, "run_evaluation", run)
+    output = tmp_path / "result.json"
+    golden = tmp_path / "golden.json"
+
+    result = quality_runner.main([
+        "--base-url", "https://study.invalid", "--output", str(output),
+        "--golden", str(golden), "--judge-model", "custom-judge",
+    ])
+
+    assert result == 17
+    assert calls[0] == ("build", "authorized-key", "custom-judge")
+    assert calls[1] == "client-enter"
+    assert calls[2] == ("run", {
+        "base_url": "https://study.invalid",
+        "golden_path": golden,
+        "output_path": output,
+        "judge_model": "custom-judge",
+        "scorer": scorer,
+        "client": "managed-client",
+    })
+    assert calls[3][0] == "client-exit"  # type: ignore[index]
