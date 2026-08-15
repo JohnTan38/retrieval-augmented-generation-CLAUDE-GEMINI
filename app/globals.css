@@ -1,5 +1,46 @@
 @import 'tailwindcss';
 
-body {
-  margin: 0;
-}
+:root { --cloud: #F7FBFF; --ink: #15243A; --meridian: #0E7C7B; --seminar: #5377DC; --session: #F3B64A; --muted: #687891; --line: #d9e4f1; --paper: #fff; }
+* { box-sizing: border-box; }
+html { background: var(--cloud); }
+body { margin: 0; min-width: 320px; color: var(--ink); background: radial-gradient(circle at 84% 4%, rgb(83 119 220 / 13%), transparent 26rem), radial-gradient(circle at 8% 33%, rgb(14 124 123 / 10%), transparent 23rem), var(--cloud); font-family: var(--font-geist), Arial, sans-serif; }
+button, textarea { font: inherit; }
+button, a { -webkit-tap-highlight-color: transparent; }
+button:focus-visible, a:focus-visible, textarea:focus-visible { outline: 3px solid var(--seminar); outline-offset: 3px; }
+
+.study-workspace { width: min(1160px, calc(100% - 40px)); margin: 0 auto; padding: 24px 0 52px; }
+.desk-nav { display: flex; align-items: center; justify-content: space-between; gap: 24px; padding: 18px 20px; border: 1px solid rgb(255 255 255 / 80%); border-radius: 18px; background: rgb(255 255 255 / 68%); box-shadow: 0 14px 40px rgb(21 36 58 / 8%); backdrop-filter: blur(14px); }
+.eyebrow, .semester-label, .document-meta, .status-banner, .section-note, .educational-note { font-family: var(--font-geist-mono), monospace; }
+.eyebrow { margin: 0 0 7px; color: var(--meridian); font-size: .73rem; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
+.desk-identity h1, .workspace-intro h2, .section-heading h2, .question-copy h2 { margin: 0; color: var(--ink); font-weight: 680; letter-spacing: -.045em; }
+.desk-identity h1 { font-size: clamp(1.35rem, 2.4vw, 1.8rem); }
+.status-banner { display: inline-flex; align-items: center; gap: 9px; margin: 0; color: #31536b; font-size: .76rem; font-weight: 600; white-space: nowrap; }
+.status-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--meridian); box-shadow: 0 0 0 4px rgb(14 124 123 / 14%); }
+.workspace-intro { max-width: 760px; padding: clamp(52px, 8vw, 96px) 0 46px; }
+.workspace-intro h2 { max-width: 720px; font-size: clamp(2.35rem, 6vw, 4.7rem); line-height: .98; }
+.workspace-intro > p:last-child { max-width: 590px; margin: 22px 0 0; color: var(--muted); font-size: clamp(1rem, 2vw, 1.13rem); line-height: 1.65; }
+
+.corpus-strip { padding: 26px 0 54px; border-top: 1px solid var(--line); }
+.section-heading { display: flex; align-items: end; justify-content: space-between; gap: 24px; margin-bottom: 22px; }
+.section-heading h2, .question-copy h2 { font-size: clamp(1.45rem, 3vw, 2rem); }
+.section-note { max-width: 285px; margin: 0; color: var(--muted); font-size: .75rem; line-height: 1.55; text-align: right; }
+.corpus-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; }
+.corpus-card { position: relative; display: flex; min-height: 270px; flex-direction: column; padding: 23px; overflow: hidden; border: 1px solid var(--line); border-radius: 14px; background: var(--paper); box-shadow: 0 9px 22px rgb(21 36 58 / 4.5%); }
+.semester-marker { width: 44px; height: 5px; margin-bottom: 22px; border-radius: 999px; background: var(--meridian); }
+.semester-blue .semester-marker { background: var(--seminar); }.semester-amber .semester-marker { background: var(--session); }
+.semester-label { margin: 0 0 9px; color: var(--muted); font-size: .72rem; font-weight: 700; }
+.corpus-card h3 { margin: 0; font-size: 1.04rem; line-height: 1.3; letter-spacing: -.02em; }
+.document-meta { margin: 11px 0 15px; color: var(--muted); font-size: .7rem; line-height: 1.4; }
+.topic-list { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 20px; padding: 0; list-style: none; }.topic-list li { padding: 4px 7px; border: 1px solid var(--line); border-radius: 5px; color: #42546b; font-size: .7rem; line-height: 1.25; }
+.download-link { width: fit-content; margin-top: auto; color: var(--ink); font-size: .82rem; font-weight: 700; text-decoration-color: currentColor; text-underline-offset: 4px; }.download-link:hover { color: var(--meridian); }
+
+.question-section { display: grid; grid-template-columns: minmax(0, .75fr) minmax(0, 1.25fr); gap: 30px; padding: clamp(28px, 5vw, 52px); border: 1px solid #cfdced; border-radius: 20px; background: linear-gradient(128deg, rgb(14 124 123 / 10%), rgb(83 119 220 / 10%)); }.question-copy { padding-top: 4px; }
+.query-composer { display: grid; gap: 10px; }.query-composer > label { font-size: .93rem; font-weight: 700; }.query-controls { display: grid; gap: 10px; }
+.query-composer textarea { width: 100%; min-height: 104px; resize: vertical; padding: 14px; border: 1px solid #b9cadc; border-radius: 10px; color: var(--ink); background: rgb(255 255 255 / 90%); line-height: 1.5; }.query-composer textarea::placeholder { color: #74859e; }
+.query-composer button, .sample-queries button { cursor: pointer; }.query-composer button { justify-self: start; padding: 11px 15px; border: 0; border-radius: 9px; color: white; background: var(--meridian); font-weight: 750; box-shadow: 0 6px 14px rgb(14 124 123 / 22%); }.query-composer button:hover:not(:disabled) { background: #096968; }.query-composer button:disabled { cursor: not-allowed; background: #9eabbc; box-shadow: none; }.query-composer > p { margin: 0; color: var(--muted); font-size: .77rem; line-height: 1.5; }
+.sample-queries { grid-column: 2; }.sample-queries > p { margin: 0 0 9px; color: var(--muted); font-family: var(--font-geist-mono), monospace; font-size: .72rem; }.sample-queries > div { display: flex; flex-wrap: wrap; gap: 8px; }.sample-queries button { padding: 7px 9px; border: 1px solid #b9cadc; border-radius: 999px; color: #36516b; background: rgb(255 255 255 / 68%); font-size: .75rem; text-align: left; }.sample-queries button:hover { border-color: var(--seminar); color: var(--seminar); }
+.educational-note { margin: 27px 0 0; color: var(--muted); font-size: .72rem; line-height: 1.5; text-align: center; }
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
+
+@media (max-width: 760px) { .study-workspace { width: min(100% - 28px, 1160px); padding-top: 14px; }.desk-nav, .section-heading { align-items: flex-start; flex-direction: column; }.section-note { text-align: left; }.corpus-grid, .question-section { grid-template-columns: 1fr; }.corpus-card { min-height: 0; }.sample-queries { grid-column: auto; } }
+@media (prefers-reduced-motion: reduce) { *, *::before, *::after { scroll-behavior: auto !important; transition-duration: .01ms !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; } }
