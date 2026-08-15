@@ -24,7 +24,7 @@ export function CorpusStrip({ documents }: CorpusStripProps) {
             <ul className="topic-list" aria-label={`Topics in ${document.semester}`}>
               {document.topics.slice(0, 3).map((topic) => <li key={topic}>{topic}</li>)}
             </ul>
-            <a href={document.download_url} download className="download-link">
+            <a href={document.download_url} download={document.filename} className="download-link">
               Download PDF <span aria-hidden="true">↓</span><span className="sr-only"> for {document.semester}</span>
             </a>
           </article>

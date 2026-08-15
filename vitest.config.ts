@@ -1,6 +1,6 @@
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { defineConfig } from 'vitest/config'
+import { configDefaults, defineConfig } from 'vitest/config'
 
 const rootDir = path.dirname(fileURLToPath(import.meta.url))
 
@@ -18,6 +18,7 @@ export default defineConfig({
     environment: 'jsdom',
     globals: true,
     setupFiles: ['./vitest.setup.ts'],
+    exclude: [...configDefaults.exclude, 'e2e/**'],
     coverage: {
       provider: 'v8',
       all: true,
@@ -29,6 +30,7 @@ export default defineConfig({
         '**/*.d.ts',
         '**/*.css',
         'lib/api/types.ts',
+        'e2e/**',
         '.next/**',
         'dist/**',
         'tests/**',

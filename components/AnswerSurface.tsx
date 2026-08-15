@@ -22,7 +22,7 @@ export function AnswerSurface({ answer, citedSourceIds, status, citationValid = 
         </div>
         <span className={`answer-state answer-state-${status}`}>{status.replace('-', ' ')}</span>
       </div>
-      <div className="answer-copy">
+      <div className="answer-copy" aria-live="polite" aria-atomic="false">
         {waiting ? <p className="answer-placeholder">Retrieving the strongest passages…</p> : null}
         {answer ? <SafeMarkdown sourceIds={citedSourceIds} onCitationActivate={onCitationActivate}>{answer}</SafeMarkdown> : null}
         {status === 'streaming' ? <span className="stream-caret" aria-hidden="true" /> : null}
