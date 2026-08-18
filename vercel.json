@@ -6,6 +6,7 @@
     "api/index.py": {
       "memory": 1024,
       "maxDuration": 60,
+      "includeFiles": "data/**",
       "excludeFiles": "{node_modules/**,.next/**,src/**,public/assets/**,**/test_*.py,**/verify_rag.py,**/build_index.py,**/__pycache__/**,.pytest_cache/**}"
     }
   },
