@@ -7,7 +7,7 @@ from collections.abc import AsyncIterator, Sequence
 from backend.prompts import SYSTEM_INSTRUCTION, build_prompt
 
 
-GENERATION_MODEL = "gemini-3.6-flash"
+GENERATION_MODEL = "gemini-3.1-flash-lite"
 
 
 class GeminiClient:
