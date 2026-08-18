@@ -37,6 +37,18 @@ const nextConfig: NextConfig = {
     }
     return [{ source: '/:path*', headers: securityHeaders }]
   },
+  async rewrites() {
+    const backendUrl = process.env.API_PROXY_URL || (isDev ? 'http://127.0.0.1:8000' : '')
+    if (backendUrl) {
+      return [
+        {
+          source: '/api/:path*',
+          destination: `${backendUrl}/api/:path*`,
+        },
+      ]
+    }
+    return []
+  },
 }
 
 export default nextConfig
