@@ -2,12 +2,18 @@
 
 from __future__ import annotations
 
+import os
 from collections.abc import AsyncIterator, Sequence
 
 from backend.prompts import SYSTEM_INSTRUCTION, build_prompt
 
 
-GENERATION_MODEL = "gemini-3.1-flash-lite"
+# The generation model is deployment-configurable so operators can point at a
+# model their Gemini project actually has access to without a code change and
+# redeploy.  The default is a broadly available GA model; set
+# GEMINI_GENERATION_MODEL to opt in to a newer or project-specific model.
+_DEFAULT_GENERATION_MODEL = "gemini-3.6-flash"
+GENERATION_MODEL = (os.environ.get("GEMINI_GENERATION_MODEL", "").strip() or _DEFAULT_GENERATION_MODEL)
 
 
 class GeminiClient:
