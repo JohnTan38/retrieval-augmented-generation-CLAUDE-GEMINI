@@ -151,8 +151,8 @@ class RagService:
             LOGGER.info("rag generation timeout request_id=%s sources=%d", request_id, len(sources))
             yield _error("generation_timeout", "Answer generation timed out.", retryable=True)
             return
-        except Exception:
-            LOGGER.info("rag generation unavailable request_id=%s sources=%d", request_id, len(sources))
+        except Exception as error:
+            LOGGER.warning("rag generation unavailable request_id=%s sources=%d error=%s", request_id, len(sources), _safe_error_label(error))
             yield _error("generation_unavailable", "Answer generation is temporarily unavailable.", retryable=True)
             return
         else:
@@ -236,3 +236,24 @@ def _timings(started: float, now: float) -> dict[str, int]:
 
 def _error(code: str, message: str, *, retryable: bool) -> ServerSentEvent:
     return ServerSentEvent(name="error", data={"code": code, "message": message, "retryable": retryable})
+
+
+def _safe_error_label(error: BaseException) -> str:
+    """A log-safe classification of a provider failure.
+
+    Provider messages can echo request content or credential material, so they
+    are never logged.  Only the exception class and the standard, structured
+    fields exposed by google-genai API errors are surfaced: the HTTP status
+    code and the canonical status token (for example ``PERMISSION_DENIED`` for a
+    revoked or leaked key, ``NOT_FOUND`` for an unknown or inaccessible model).
+    These are enough to tell an operator why generation failed without leaking
+    any free-text payload.
+    """
+    parts = [type(error).__name__]
+    code = getattr(error, "code", None)
+    if isinstance(code, int):
+        parts.append(f"code={code}")
+    status = getattr(error, "status", None)
+    if isinstance(status, str) and status and status.replace("_", "").isalpha() and status.upper() == status:
+        parts.append(f"status={status}")
+    return " ".join(parts)
