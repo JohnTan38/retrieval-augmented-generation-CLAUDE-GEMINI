@@ -12,7 +12,7 @@ from backend.prompts import SYSTEM_INSTRUCTION, build_prompt
 # model their Gemini project actually has access to without a code change and
 # redeploy.  The default is a broadly available GA model; set
 # GEMINI_GENERATION_MODEL to opt in to a newer or project-specific model.
-_DEFAULT_GENERATION_MODEL = "gemini-2.5-flash"
+_DEFAULT_GENERATION_MODEL = "gemini-3.6-flash"
 GENERATION_MODEL = (os.environ.get("GEMINI_GENERATION_MODEL", "").strip() or _DEFAULT_GENERATION_MODEL)
 
 
