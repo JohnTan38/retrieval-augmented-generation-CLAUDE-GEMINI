@@ -9,6 +9,7 @@ const document: CorpusDocument = {
   filename: 'swk501-July2025-deep-research-model-answers.pdf',
   title: 'SWK501 July 2025 Deep-Research Model Answers',
   semester: 'July 2025',
+  variant: 'research',
   pages: 36,
   sha256: '57d8a0be84911246c36dafb484534a0b1d9311088969d8afcf1af32aae4babed',
   download_url: '/documents/swk501-July2025-deep-research-model-answers.pdf',
@@ -19,7 +20,7 @@ const document: CorpusDocument = {
 test('provides the PDF filename to assistive download clients', () => {
   render(<CorpusStrip documents={[document]} />)
 
-  expect(screen.getByRole('link', { name: /download pdf for july 2025/i })).toHaveAttribute(
+  expect(screen.getByRole('link', { name: /download research pdf for july 2025/i })).toHaveAttribute(
     'download',
     document.filename,
   )

@@ -9,6 +9,7 @@ const source = {
   filename: 'swk501-July2025-deep-research-model-answers.pdf',
   title: 'SWK501 July 2025 Deep-Research Model Answers',
   semester: 'July 2025',
+  variant: 'research',
   page: 9,
   excerpt: 'Arnett describes emerging adulthood as a distinct developmental period.',
   score: 0.91,
@@ -33,13 +34,14 @@ beforeEach(() => {
 })
 
 test('retains sources and partial answer after a provider error, then retries the same query', async () => {
+  const claudeSource = { ...source, variant: 'claude' }
   const failed = sseResponse([
-    ['sources', { request_id: 'req-5', retrieval_mode: 'hybrid', sources: [source], timings: { retrieval_ms: 8 } }],
+    ['sources', { request_id: 'req-5', retrieval_mode: 'hybrid', sources: [claudeSource], timings: { retrieval_ms: 8 } }],
     ['token', { delta: 'A grounded partial answer [S1].' }],
     ['error', { code: 'generation_unavailable', message: 'Answer generation is temporarily unavailable.', retryable: true }],
   ])
   const recovered = sseResponse([
-    ['sources', { request_id: 'req-6', retrieval_mode: 'hybrid', sources: [source], timings: { retrieval_ms: 7 } }],
+    ['sources', { request_id: 'req-6', retrieval_mode: 'hybrid', sources: [claudeSource], timings: { retrieval_ms: 7 } }],
     ['token', { delta: 'A recovered answer [S1].' }],
     ['complete', { request_id: 'req-6', timings: { total_ms: 18 }, cited_source_ids: ['S1'], citation_valid: true }],
   ])
@@ -53,6 +55,7 @@ test('retains sources and partial answer after a provider error, then retries th
   expect(await screen.findByText('Answer generation is temporarily unavailable.')).toBeVisible()
   expect(screen.getByText(/grounded partial answer/)).toBeVisible()
   expect(screen.getByTestId('source-S1')).toBeVisible()
+  expect(screen.getByText('CLAUDE recall')).toBeVisible()
 
   await user.click(screen.getByRole('button', { name: /retry question/i }))
 

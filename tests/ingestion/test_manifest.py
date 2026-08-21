@@ -26,25 +26,38 @@ def test_manifest_contains_the_exact_approved_corpus():
 
     assert [document.document_id for document in manifest.documents] == [
         "jan-2025",
+        "jan-2025-claude",
         "jul-2025",
+        "jul-2025-claude",
         "jan-2026",
+        "jan-2026-claude",
     ]
-    assert [document.pages for document in manifest.documents] == [26, 36, 27]
+    assert [document.pages for document in manifest.documents] == [26, 15, 36, 15, 27, 13]
+    assert [document.variant for document in manifest.documents] == ["research", "claude"] * 3
     assert [document.filename for document in manifest.documents] == [
         "swk501-Jan2025-evidence-based-model-answers.pdf",
+        "swk501-Jan2025-CLAUDE-model-answers.pdf",
         "swk501-July2025-deep-research-model-answers.pdf",
+        "swk501-July2025-CLAUDE-model-answers.pdf",
         "swk501-Jan2026-deep-research-model-answers.pdf",
+        "swk501-Jan2026-CLAUDE-model-answers.pdf",
     ]
     assert [document.sha256 for document in manifest.documents] == [
         "ce5e335a78d2c2398452643b65eae5aa85e290b37a32dcc28710ae77cc5783b9",
+        "7a1e8a977ed91c7914cde3253011cee23b0331405ffcbc000674dce01bc1e0de",
         "57d8a0be84911246c36dafb484534a0b1d9311088969d8afcf1af32aae4babed",
+        "472245168c666fd582447837f3f6b834d0bf369ec30ec0f1893f40579e5ba117",
         "109601093872bd96a0333386b2e474bd67f3c91331fb873218b560ecdc93e1a7",
+        "2dd0c32eb4f59d8c676f4f58e553eba0a3ef2c6c2ddd34d08978b994bb955c3b",
     ]
-    assert sum(document.pages for document in manifest.documents) == 89
+    assert sum(document.pages for document in manifest.documents) == 132
     assert {document.download_url for document in manifest.documents} == {
         "/documents/swk501-Jan2025-evidence-based-model-answers.pdf",
+        "/documents/swk501-Jan2025-CLAUDE-model-answers.pdf",
         "/documents/swk501-July2025-deep-research-model-answers.pdf",
+        "/documents/swk501-July2025-CLAUDE-model-answers.pdf",
         "/documents/swk501-Jan2026-deep-research-model-answers.pdf",
+        "/documents/swk501-Jan2026-CLAUDE-model-answers.pdf",
     }
 
 

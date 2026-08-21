@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
+from typing import Literal
 
 from pydantic import (
     BaseModel,
@@ -35,6 +36,7 @@ class CorpusDocument(BaseModel):
     filename: StrictStr
     title: StrictStr = Field(min_length=1)
     semester: StrictStr = Field(min_length=1)
+    variant: Literal["research", "claude"] = "research"
     pages: StrictInt = Field(gt=0)
     sha256: StrictStr
     download_url: StrictStr
@@ -131,6 +133,7 @@ class ChunkRecord(BaseModel):
     document_id: StrictStr
     filename: StrictStr
     semester: StrictStr
+    variant: Literal["research", "claude"] = "research"
     page: StrictInt = Field(gt=0)
     text: StrictStr
     topics: tuple[StrictStr, ...] = Field(min_length=1)

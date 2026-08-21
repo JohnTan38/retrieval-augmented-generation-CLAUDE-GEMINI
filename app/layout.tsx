@@ -1,16 +1,23 @@
 import type { Metadata } from 'next'
-import { Geist, Geist_Mono } from 'next/font/google'
+import { IBM_Plex_Mono, Sora, Source_Sans_3 } from 'next/font/google'
 import './globals.css'
 
-const geist = Geist({
+const sora = Sora({
   subsets: ['latin'],
-  variable: '--font-geist',
+  variable: '--font-display',
   display: 'swap',
 })
 
-const geistMono = Geist_Mono({
+const sourceSans = Source_Sans_3({
   subsets: ['latin'],
-  variable: '--font-geist-mono',
+  variable: '--font-reading',
+  display: 'swap',
+})
+
+const plexMono = IBM_Plex_Mono({
+  subsets: ['latin'],
+  weight: ['400', '600', '700'],
+  variable: '--font-evidence',
   display: 'swap',
 })
 
@@ -23,7 +30,7 @@ export default function RootLayout({
   children,
 }: Readonly<{ children: React.ReactNode }>) {
   return (
-    <html lang="en" className={`${geist.variable} ${geistMono.variable}`}>
+    <html lang="en" className={`${sora.variable} ${sourceSans.variable} ${plexMono.variable}`}>
       <body>{children}</body>
     </html>
   )

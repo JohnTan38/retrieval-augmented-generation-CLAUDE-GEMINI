@@ -19,6 +19,9 @@ REQUIRED_GOLDEN_IDS = {
     "marcia",
     "cognitive-ageing",
     "baltes-soc",
+    "jan-2025-active-recall",
+    "jul-2025-active-recall",
+    "jan-2026-active-recall",
 }
 
 
@@ -63,6 +66,17 @@ def test_hybrid_retriever_uses_lexical_results_when_vector_is_unavailable(index_
     assert len(results) == 3
     assert all(result.score > 0 for result in results)
     assert all(result.download_url == f"/documents/{result.filename}" for result in results)
+
+
+def test_recall_excerpt_includes_the_named_concepts_used_for_grounding(index_store) -> None:
+    result = HybridRetriever(index_store).search_lexical(
+        "active recall Bandura four sources triadic reciprocal determinism", top_k=1
+    )[0]
+
+    assert result.document_id == "jul-2025-claude"
+    assert "four sources of self-efficacy" in result.excerpt.lower()
+    assert "triadic reciprocal" in result.excerpt.lower()
+    assert len(result.excerpt) <= 1000
 
 
 def test_search_rejects_invalid_inputs_and_hot_retrieval_stays_within_local_budget(index_store) -> None:

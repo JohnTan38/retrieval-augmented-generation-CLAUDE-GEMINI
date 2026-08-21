@@ -28,11 +28,11 @@ def test_build_index_writes_the_deterministic_hybrid_artifact() -> None:
         two = build_index(ROOT / "data/corpus-manifest.json", ROOT / "public/documents", second, FakeEmbedder())
 
         assert one == two
-        assert one.corpus_version == "swk501-2026-01-v1"
+        assert one.corpus_version == "swk501-2026-01-v2"
         assert one.embedding_dimensions == 2
-        assert len(one.documents) == 3
-        assert sum(document.pages for document in one.documents) == 89
-        assert len(one.chunks) == 93
+        assert len(one.documents) == 6
+        assert sum(document.pages for document in one.documents) == 132
+        assert len(one.chunks) == 137
         assert first.read_bytes() == second.read_bytes()
         assert read_artifact(first) == one
     finally:

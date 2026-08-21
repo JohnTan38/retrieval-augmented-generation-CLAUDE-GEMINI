@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 import re
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, StrictFloat, StrictInt, StrictStr, ValidationInfo, field_validator
 
@@ -44,8 +45,9 @@ class SourceEvidence(BaseModel):
     filename: StrictStr
     title: StrictStr = Field(min_length=1)
     semester: StrictStr = Field(min_length=1)
+    variant: Literal["research", "claude"] = "research"
     page: StrictInt = Field(gt=0)
-    excerpt: StrictStr = Field(min_length=1, max_length=600)
+    excerpt: StrictStr = Field(min_length=1, max_length=1000)
     score: StrictFloat = Field(gt=0)
     lexical_score: StrictFloat = Field(ge=0, default=0.0)
     dense_score: StrictFloat = Field(ge=0, default=0.0)

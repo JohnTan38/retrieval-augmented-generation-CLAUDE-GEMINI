@@ -10,7 +10,7 @@ import re
 from ingestion.models import ChunkRecord, CorpusDocument, PageText
 
 
-DEFAULT_CORPUS_VERSION = "swk501-2026-01-v1"
+DEFAULT_CORPUS_VERSION = "swk501-2026-01-v2"
 _WORD_PATTERN = re.compile(r"\S+")
 _PARAGRAPH_BREAK_PATTERN = re.compile(r"\n[^\S\r\n]*\n+")
 _SENTENCE_ENDING_PATTERN = re.compile(r"[.!?][)\]}\"'”’]*$")
@@ -125,6 +125,7 @@ def _chunk_page(
             document_id=document.document_id,
             filename=document.filename,
             semester=document.semester,
+            variant=document.variant,
             page=page.page,
             text=_span_text(words, span),
             topics=document.topics,

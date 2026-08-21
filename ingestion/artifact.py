@@ -10,6 +10,7 @@ import math
 import os
 from pathlib import Path
 import tempfile
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, StrictFloat, StrictInt, StrictStr, field_validator, model_validator
 
@@ -23,6 +24,7 @@ class ArtifactChunk(BaseModel):
     document_id: StrictStr = Field(min_length=1)
     filename: StrictStr = Field(min_length=1)
     semester: StrictStr = Field(min_length=1)
+    variant: Literal["research", "claude"] = "research"
     page: StrictInt = Field(gt=0)
     text: StrictStr = Field(min_length=1)
     topics: tuple[StrictStr, ...] = Field(min_length=1)
@@ -98,7 +100,7 @@ class IndexArtifact(BaseModel):
             if chunk.document_id not in document_ids:
                 raise ValueError("chunk document is missing from artifact documents")
             document = next(document for document in self.documents if document.document_id == chunk.document_id)
-            if (chunk.filename != document.filename or chunk.semester != document.semester
+            if (chunk.filename != document.filename or chunk.semester != document.semester or chunk.variant != document.variant
                     or chunk.page > document.pages or chunk.topics != document.topics):
                 raise ValueError("chunk metadata does not match its document")
             if len(chunk.vector) != self.embedding_dimensions:

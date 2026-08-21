@@ -34,7 +34,7 @@ def test_real_hybrid_retriever_refuses_unrelated_dense_only_evidence(index_store
     async def exercise():
         query = "quasar nebula tachyon xylophone"
         provider = TrackingProvider(HashEmbedder.vector_for(query))
-        events = [event async for event in RagService(HybridRetriever(index_store), provider, embedding_dimensions=128).stream_query(query, "req")]
+        events = [event async for event in RagService(HybridRetriever(index_store), provider, embedding_dimensions=768).stream_query(query, "req")]
         assert [event.name for event in events] == ["sources", "complete"]
         assert events[-1].data["refusal"] is True
         assert provider.generated is False
@@ -46,9 +46,37 @@ def test_real_hybrid_retriever_allows_strong_lexically_supported_domain_query(in
     async def exercise():
         query = "Arnett emerging adulthood Tan family"
         provider = TrackingProvider(HashEmbedder.vector_for(query))
-        events = [event async for event in RagService(HybridRetriever(index_store), provider, embedding_dimensions=128).stream_query(query, "req")]
-        assert [event.name for event in events] == ["sources", "token", "complete"]
+        events = [event async for event in RagService(HybridRetriever(index_store), provider, embedding_dimensions=768).stream_query(query, "req")]
+        assert [event.name for event in events] == ["sources", "token", "token", "complete"]
         assert provider.generated is True
+
+    asyncio.run(exercise())
+
+
+def test_generation_uses_the_same_bounded_evidence_exposed_in_sources():
+    from tests.backend.conftest import FakeRetriever
+
+    class CapturingProvider(TrackingProvider):
+        def __init__(self) -> None:
+            super().__init__([1.0])
+            self.grounding_excerpt = ""
+
+        async def stream_answer(self, query: str, sources):
+            self.generated = True
+            self.grounding_excerpt = sources[0].excerpt
+            yield "Grounded response [S1]."
+
+    async def exercise():
+        provider = CapturingProvider()
+        events = [
+            event
+            async for event in RagService(FakeRetriever(), provider, embedding_dimensions=1).stream_query(
+                "Arnett", "req"
+            )
+        ]
+        public_source = events[0].data["sources"][0]
+        assert public_source["excerpt"] == "Arnett describes emerging adulthood as exploratory."
+        assert provider.grounding_excerpt == public_source["excerpt"]
 
     asyncio.run(exercise())
 
@@ -60,8 +88,8 @@ def test_real_hybrid_retriever_allows_high_confidence_semantic_paraphrase(index_
         query = "Liminal individuation provisionality"
         assert retriever.search_lexical(query, top_k=1) == []
         provider = TrackingProvider(list(index_store.chunks_by_id[anchor.chunk_id].vector))
-        events = [event async for event in RagService(retriever, provider, embedding_dimensions=128).stream_query(query, "req")]
-        assert [event.name for event in events] == ["sources", "token", "complete"]
+        events = [event async for event in RagService(retriever, provider, embedding_dimensions=768).stream_query(query, "req")]
+        assert [event.name for event in events] == ["sources", "token", "token", "complete"]
         assert provider.generated is True
 
     asyncio.run(exercise())

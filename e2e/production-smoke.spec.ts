@@ -7,7 +7,7 @@ test('production read-only surface is healthy @production', async ({ page }) => 
 
   expect(response?.ok()).toBe(true)
   await expect(page).toHaveTitle(/SgCare Study Desk/i)
-  await expect(page.getByText(/3 documents.*89 pages/i)).toBeVisible()
+  await expect(page.getByText(/6 documents.*132 pages/i)).toBeVisible()
 })
 
 

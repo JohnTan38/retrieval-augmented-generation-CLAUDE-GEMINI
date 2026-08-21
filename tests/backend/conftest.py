@@ -16,7 +16,7 @@ from backend.models import SourceEvidence
 @dataclass
 class FakeArtifact:
     schema_version: int = 1
-    corpus_version: str = "swk501-2026-01-v1"
+    corpus_version: str = "swk501-2026-01-v2"
     embedding_model: str = "gemini-embedding-001"
 
 
@@ -30,6 +30,7 @@ class FakeStore:
             type("Document", (), {
                 "document_id": "jan-2026", "filename": "swk501-january-2026.pdf",
                 "title": "SWK501 January 2026", "semester": "January 2026", "pages": 27,
+                "variant": "research",
                 "topics": ("development",), "sha256": "a" * 64,
                 "download_url": "/documents/swk501-january-2026.pdf",
             })(),
@@ -44,7 +45,7 @@ class FakeRetriever:
             SourceEvidence(
                 chunk_id="a" * 24, source_id="a" * 24, document_id="jan-2026",
                 filename="swk501-january-2026.pdf", title="SWK501 January 2026",
-                semester="January 2026", page=2, excerpt="Arnett describes emerging adulthood as exploratory.",
+                semester="January 2026", variant="research", page=2, excerpt="Arnett describes emerging adulthood as exploratory.",
                 score=0.9, lexical_score=1.0, download_url="/documents/swk501-january-2026.pdf",
             )
         ]

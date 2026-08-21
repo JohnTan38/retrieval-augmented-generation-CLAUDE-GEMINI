@@ -2,23 +2,26 @@
 
 from __future__ import annotations
 
-import os
 from collections.abc import AsyncIterator, Sequence
+from dataclasses import dataclass
+
+from google.genai import types
 
 from backend.prompts import SYSTEM_INSTRUCTION, build_prompt
+from ingestion.embeddings import EMBEDDING_DIMENSIONS
 
 
-# The generation model is deployment-configurable so operators can point at a
-# model their Gemini project actually has access to without a code change and
-# redeploy.  The default is a broadly available GA model; set
-# GEMINI_GENERATION_MODEL to opt in to a newer or project-specific model.
-_DEFAULT_GENERATION_MODEL = "gemini-3.6-flash"
-GENERATION_MODEL = (os.environ.get("GEMINI_GENERATION_MODEL", "").strip() or _DEFAULT_GENERATION_MODEL)
+@dataclass(frozen=True)
+class GenerationDelta:
+    """One provider stream update with an optional terminal finish reason."""
+
+    text: str = ""
+    finish_reason: str | None = None
 
 
 class GeminiClient:
-    def __init__(self, api_key: str, embedding_model: str, *, client: object | None = None) -> None:
-        if not api_key or not api_key.strip() or not embedding_model or not embedding_model.strip():
+    def __init__(self, api_key: str, embedding_model: str, generation_model: str, *, client: object | None = None) -> None:
+        if not api_key or not api_key.strip() or not embedding_model or not embedding_model.strip() or not generation_model or not generation_model.strip():
             raise ValueError("Gemini configuration is unavailable")
         if client is None:
             from google import genai
@@ -26,12 +29,13 @@ class GeminiClient:
             client = genai.Client(api_key=api_key)
         self._client = client
         self._embedding_model = embedding_model
+        self._generation_model = generation_model
 
     async def embed_query(self, query: str) -> list[float]:
         response = await self._client.aio.models.embed_content(
             model=self._embedding_model,
             contents=[query],
-            config={"task_type": "RETRIEVAL_QUERY"},
+            config={"task_type": "RETRIEVAL_QUERY", "output_dimensionality": EMBEDDING_DIMENSIONS},
         )
         embeddings = getattr(response, "embeddings", None)
         if not isinstance(embeddings, list) or len(embeddings) != 1:
@@ -41,13 +45,32 @@ class GeminiClient:
             raise ValueError("embedding response is unavailable")
         return values
 
-    async def stream_answer(self, query: str, sources: Sequence[object]) -> AsyncIterator[str]:
+    async def stream_answer(self, query: str, sources: Sequence[object]) -> AsyncIterator[GenerationDelta]:
         stream = await self._client.aio.models.generate_content_stream(
-            model=GENERATION_MODEL,
+            model=self._generation_model,
             contents=build_prompt(query, sources),
-            config={"system_instruction": SYSTEM_INSTRUCTION, "max_output_tokens": 1024},
+            config=types.GenerateContentConfig(
+                system_instruction=SYSTEM_INSTRUCTION,
+                max_output_tokens=2048,
+                thinking_config=types.ThinkingConfig(thinking_level="LOW"),
+            ),
         )
         async for chunk in stream:
             text = getattr(chunk, "text", None)
-            if isinstance(text, str) and text:
-                yield text
+            finish_reason = _finish_reason(chunk)
+            if (isinstance(text, str) and text) or finish_reason is not None:
+                yield GenerationDelta(text=text if isinstance(text, str) else "", finish_reason=finish_reason)
+
+
+def _finish_reason(chunk: object) -> str | None:
+    candidates = getattr(chunk, "candidates", None)
+    if not isinstance(candidates, list):
+        return None
+    for candidate in candidates:
+        value = getattr(candidate, "finish_reason", None)
+        if value is None:
+            continue
+        raw = getattr(value, "value", value)
+        if isinstance(raw, str) and raw:
+            return raw
+    return None

@@ -135,7 +135,7 @@ export async function* parseEventStream(
     } else if (name === 'complete') {
       const citedIds = data.cited_source_ids
       if (!sourcesSeen || !optionalString(data, 'request_id') || !optionalBoolean(data, 'citation_valid') ||
-          !optionalBoolean(data, 'refusal') || !optionalString(data, 'message') || !optionalTiming(data, 'total_ms') ||
+          !optionalBoolean(data, 'generation_complete') || !optionalBoolean(data, 'refusal') || !optionalString(data, 'message') || !optionalTiming(data, 'total_ms') ||
           (requestId !== undefined && data.request_id !== undefined && requestId !== data.request_id) ||
           (citedIds !== undefined && (!Array.isArray(citedIds) || citedIds.some((id) => typeof id !== 'string' || !knownSourceIds.has(id))))) {
         throw invalidStream()
@@ -143,7 +143,8 @@ export async function* parseEventStream(
       terminalSeen = true
     } else {
       if (typeof data.code !== 'string' || typeof data.message !== 'string' || typeof data.retryable !== 'boolean' ||
-          (data.retry_after_seconds !== undefined && typeof data.retry_after_seconds !== 'number')) throw invalidStream()
+          (data.retry_after_seconds !== undefined && typeof data.retry_after_seconds !== 'number') ||
+          (data.partial_text !== undefined && typeof data.partial_text !== 'string')) throw invalidStream()
       terminalSeen = true
     }
     return { type: name, data } as StreamEvent

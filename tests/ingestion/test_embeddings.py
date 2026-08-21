@@ -38,7 +38,7 @@ def test_google_embedder_batches_documents_and_uses_retrieval_document_contract(
 
     assert result == [[1.0, 0.0], [1.0, 0.0], [1.0, 0.0]]
     assert [call["contents"] for call in calls] == [["one", "two"], ["three"]]
-    assert all(call["config"] == {"task_type": "RETRIEVAL_DOCUMENT"} for call in calls)
+    assert all(call["config"] == {"task_type": "RETRIEVAL_DOCUMENT", "output_dimensionality": 768} for call in calls)
 
 
 def test_google_embedder_retries_only_transient_server_failures() -> None:

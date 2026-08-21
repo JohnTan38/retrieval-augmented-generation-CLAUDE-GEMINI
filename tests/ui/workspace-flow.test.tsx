@@ -9,6 +9,7 @@ const source = {
   filename: 'swk501-July2025-deep-research-model-answers.pdf',
   title: 'SWK501 July 2025 Deep-Research Model Answers',
   semester: 'July 2025',
+  variant: 'research',
   page: 9,
   excerpt: 'Arnett describes emerging adulthood as a distinct developmental period.',
   score: 0.91,

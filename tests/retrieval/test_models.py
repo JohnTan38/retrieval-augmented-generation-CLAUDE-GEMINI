@@ -34,6 +34,8 @@ def test_source_evidence_is_frozen_and_uses_only_exact_safe_source_metadata() ->
     with pytest.raises(ValidationError):
         _evidence(title=" ")
     with pytest.raises(ValidationError):
+        _evidence(excerpt="x" * 1001)
+    with pytest.raises(ValidationError):
         _evidence(score=float("inf"))
     with pytest.raises(ValidationError):
         _evidence(download_url="/documents/other.pdf")

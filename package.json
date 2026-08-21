@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "next dev",
-    "dev:api": "python -m uvicorn api.index:app --host 127.0.0.1 --port 8000 --reload",
+    "dev:api": "python -m uvicorn backend.local_app:app --host 127.0.0.1 --port 8000 --reload",
     "build": "next build",
     "start": "next start",
     "lint": "eslint .",
@@ -17,6 +17,7 @@
     "test:e2e:production": "playwright test e2e/production-smoke.spec.ts --grep @production",
     "test:quality:live": "python -m evaluation.run_quality",
     "test:python": "python -m pytest -q",
+    "test:python:coverage": "python -m pytest -q --cov=backend --cov=ingestion --cov=evaluation --cov-report=term-missing --cov-fail-under=100",
     "test:retrieval": "python -m pytest -q -m retrieval",
     "test:quality": "npm run typecheck && npm run lint && npm run test:coverage",
     "check": "npm run typecheck && npm run lint && npm test"
@@ -42,11 +43,11 @@
     "@types/node": "^26.2.0",
     "@types/react": "^19.2.18",
     "@types/react-dom": "^19.2.4",
-    "@vitest/coverage-v8": "^2.1.9",
+    "@vitest/coverage-v8": "^3.2.6",
     "eslint": "^9.39.5",
     "eslint-config-next": "^16.3.1",
     "jsdom": "^25.0.1",
     "typescript": "^5.9.3",
-    "vitest": "^2.1.9"
+    "vitest": "^3.2.6"
   }
 }

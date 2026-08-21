@@ -76,7 +76,7 @@ def create_app(*, store: object | None = None, retriever: object | None = None, 
         retriever = HybridRetriever(store)
     if gemini is None and store is not None:
         try:
-            gemini = GeminiClient(require_api_key(settings), store.artifact.embedding_model)
+            gemini = GeminiClient(require_api_key(settings), store.artifact.embedding_model, settings.generation_model)
         except (ConfigurationUnavailable, ValueError):
             gemini = None
     app.state.gateway = RagService(retriever, gemini, settings.embedding_timeout_seconds, settings.generation_timeout_seconds, settings.total_timeout_seconds, store.embedding_dimensions) if retriever is not None and gemini is not None else None
@@ -85,17 +85,19 @@ def create_app(*, store: object | None = None, retriever: object | None = None, 
     @app.get("/api/health")
     async def health() -> JSONResponse:
         active = app.state.store
+        generation_ready = app.state.gateway is not None
         if active is None:
-            return JSONResponse({"ready": False, "status": "index_unavailable"})
+            return JSONResponse({"ready": False, "documents": 0, "pages": 0, "chunks": 0, "dense_index_ready": False, "generation_ready": False, "status": "index_unavailable"})
         documents = active.artifact.documents
-        return JSONResponse({"ready": True, "schema_version": active.artifact.schema_version, "corpus_version": active.artifact.corpus_version, "documents": len(documents), "pages": sum(document.pages for document in documents), "status": "ready"})
+        chunks = getattr(active.artifact, "chunks", ())
+        return JSONResponse({"ready": generation_ready, "schema_version": active.artifact.schema_version, "corpus_version": active.artifact.corpus_version, "documents": len(documents), "pages": sum(document.pages for document in documents), "chunks": len(chunks), "dense_index_ready": True, "generation_ready": generation_ready, "status": "ready" if generation_ready else "generation_unavailable"})
 
     @app.get("/api/corpus")
     async def corpus(request: Request) -> JSONResponse:
         active = app.state.store
         if active is None:
             return _safe_error(503, "index_unavailable", "The study corpus is not ready.", request.state.request_id)
-        return JSONResponse({"documents": [document.model_dump() if hasattr(document, "model_dump") else {name: getattr(document, name) for name in ("document_id", "filename", "title", "semester", "pages", "topics", "sha256", "download_url")} for document in active.artifact.documents]})
+        return JSONResponse({"documents": [document.model_dump() if hasattr(document, "model_dump") else {name: getattr(document, name) for name in ("document_id", "filename", "title", "semester", "variant", "pages", "topics", "sha256", "download_url")} for document in active.artifact.documents]})
 
     @app.post("/api/query", response_model=None)
     async def query(request: Request):

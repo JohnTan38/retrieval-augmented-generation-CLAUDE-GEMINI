@@ -36,14 +36,17 @@ function citationPlugin(sourceIds: Set<string>) {
         }
         const parts: MarkdownNode[] = []
         let cursor = 0
-        for (const match of child.value.matchAll(/\[(S[1-9][0-9]*)\]/g)) {
+        for (const match of child.value.matchAll(/\[(S[1-9][0-9]*(?:\s*,\s*S[1-9][0-9]*)*)\]/g)) {
           const index = match.index!
           if (index > cursor) parts.push({ type: 'text', value: child.value.slice(cursor, index) })
-          const sourceId = match[1]
-          if (sourceIds.has(sourceId)) {
-            const occurrence = sourceOccurrences.get(sourceId) ?? 0
-            sourceOccurrences.set(sourceId, occurrence + 1)
-            parts.push({ type: 'link', url: `#citation-${sourceId}-${occurrence}`, children: [{ type: 'text', value: match[0] }] })
+          const groupedSourceIds = match[1].split(/\s*,\s*/)
+          if (groupedSourceIds.every((sourceId) => sourceIds.has(sourceId))) {
+            groupedSourceIds.forEach((sourceId, groupIndex) => {
+              if (groupIndex > 0) parts.push({ type: 'text', value: ' ' })
+              const occurrence = sourceOccurrences.get(sourceId) ?? 0
+              sourceOccurrences.set(sourceId, occurrence + 1)
+              parts.push({ type: 'link', url: `#citation-${sourceId}-${occurrence}`, children: [{ type: 'text', value: `[${sourceId}]` }] })
+            })
           } else {
             parts.push({ type: 'text', value: match[0] })
           }

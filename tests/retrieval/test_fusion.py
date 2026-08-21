@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import pytest
 
-from backend.retrieval import diversity_select, reciprocal_rank_fusion
+from types import SimpleNamespace
+
+from backend.retrieval import _ScoredChunk, _vector_similarity, diversity_select, prioritize_variants, reciprocal_rank_fusion, supported_chunk_ids
 
 
 def test_rrf_promotes_results_present_in_both_rankings() -> None:
@@ -57,3 +59,41 @@ def test_diversity_suppresses_extra_chunks_from_one_document_page(index_store) -
         with pytest.raises(ValueError, match="top_k"):
             diversity_select(index_store, ranked, top_k=invalid_top_k)
     assert diversity_select(index_store, [], top_k=1) == []
+
+
+def test_support_filter_requires_relative_lexical_or_strong_dense_evidence() -> None:
+    lexical = [_ScoredChunk("strong", 10.0), _ScoredChunk("boundary", 6.5), _ScoredChunk("weak", 6.49), _ScoredChunk("rescued", 1.0)]
+    dense = [_ScoredChunk("rescued", 0.75), _ScoredChunk("weak", 0.749)]
+
+    assert supported_chunk_ids(lexical, dense) == {"strong", "boundary", "rescued"}
+    assert supported_chunk_ids([], [_ScoredChunk("semantic", 0.9), _ScoredChunk("noise", 0.74)]) == {"semantic"}
+
+
+def test_diversity_prefers_research_when_paired_passages_are_near_duplicates() -> None:
+    chunks = {
+        "claude": SimpleNamespace(chunk_id="claude", document_id="claude-doc", semester="January 2025", variant="claude", page=2, vector=(1.0, 0.0)),
+        "research": SimpleNamespace(chunk_id="research", document_id="research-doc", semester="January 2025", variant="research", page=8, vector=(0.99, 0.01)),
+        "distinct": SimpleNamespace(chunk_id="distinct", document_id="research-doc", semester="January 2025", variant="research", page=9, vector=(0.0, 1.0)),
+    }
+    store = SimpleNamespace(chunks_by_id=chunks)
+    ranked = reciprocal_rank_fusion(["claude", "distinct", "research"], [])
+
+    selected = diversity_select(store, ranked, top_k=2)
+
+    assert [item.chunk_id for item in selected] == ["research", "distinct"]
+    assert [item.chunk_id for item in diversity_select(store, reciprocal_rank_fusion(["research", "claude"], []), top_k=2)] == ["research"]
+    assert _vector_similarity((1.0,), (1.0, 0.0)) == -1.0
+
+
+def test_variant_priority_is_research_first_except_for_explicit_recall_intent() -> None:
+    chunks = {
+        "claude": SimpleNamespace(variant="claude", semester="January 2026"),
+        "research": SimpleNamespace(variant="research", semester="January 2026"),
+        "other-research": SimpleNamespace(variant="research", semester="July 2025"),
+    }
+    store = SimpleNamespace(chunks_by_id=chunks)
+    ranked = reciprocal_rank_fusion(["claude", "research", "other-research"], [])
+
+    assert [item.chunk_id for item in prioritize_variants(store, ranked, "Explain Marcia identity status")] == ["research", "claude", "other-research"]
+    assert [item.chunk_id for item in prioritize_variants(store, ranked, "Quiz me with active-recall flashcards")] == ["claude", "research", "other-research"]
+    assert [item.chunk_id for item in prioritize_variants(store, [], "Explain Marcia")] == []
