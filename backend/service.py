@@ -100,9 +100,19 @@ class RagService:
                 except Exception:
                     retrieval_mode = "lexical_degraded"
             else:
-                # The lexical sources can be presented now; do not delay them for
-                # an optional dense rerank that has not completed.
-                retrieval_mode = "lexical_degraded"
+                # Lexical search normally wins this race by hundreds of
+                # milliseconds.  Wait only for the remaining, bounded embedding
+                # budget so the production path actually performs hybrid reranking
+                # without allowing provider latency to break the source SLA.
+                try:
+                    candidate = await _within_budget(embedding_task, deadline, self.embedding_timeout_seconds, self.clock)
+                    vector = _validated_vector(candidate, self.embedding_dimensions)
+                except asyncio.CancelledError:
+                    raise
+                except (TimeoutError, asyncio.TimeoutError):
+                    retrieval_mode = "lexical_degraded"
+                except Exception:
+                    retrieval_mode = "lexical_degraded"
 
             if vector is not None:
                 try:

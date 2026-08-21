@@ -20,7 +20,7 @@ class Settings:
     artifact_path: Path
     api_key: str | None
     generation_model: str = DEFAULT_GENERATION_MODEL
-    embedding_timeout_seconds: float = 5.0
+    embedding_timeout_seconds: float = 1.25
     generation_timeout_seconds: float = 25.0
     total_timeout_seconds: float = 30.0
 

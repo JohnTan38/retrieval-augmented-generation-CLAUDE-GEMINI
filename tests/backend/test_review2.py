@@ -120,6 +120,119 @@ def test_lexical_search_starts_before_embedding_finishes():
     asyncio.run(exercise())
 
 
+def test_hybrid_waits_within_budget_for_embedding_after_fast_lexical_results():
+    class RecordingRetriever:
+        def __init__(self) -> None:
+            self.vectors: list[list[float] | None] = []
+
+        def search_lexical(self, query: str):
+            self.vectors.append(None)
+            from tests.backend.conftest import FakeRetriever
+            return FakeRetriever().search(query, None)
+
+        def search(self, query: str, vector):
+            self.vectors.append(vector)
+            from tests.backend.conftest import FakeRetriever
+            return FakeRetriever().search(query, vector)
+
+    class BrieflyDelayedProvider(TrackingProvider):
+        async def embed_query(self, query: str) -> list[float]:
+            await asyncio.sleep(0.05)
+            return self.vector
+
+    async def exercise():
+        retriever = RecordingRetriever()
+        provider = BrieflyDelayedProvider([1.0])
+        events = [
+            event
+            async for event in RagService(
+                retriever,
+                provider,
+                embedding_dimensions=1,
+                embedding_timeout_seconds=0.2,
+            ).stream_query("Arnett", "req")
+        ]
+        assert retriever.vectors == [None, [1.0]]
+        assert events[0].data["retrieval_mode"] == "hybrid"
+
+    asyncio.run(exercise())
+
+
+def test_bounded_hybrid_wait_degrades_safely_and_propagates_cancellation(monkeypatch):
+    from tests.backend.conftest import FakeRetriever
+
+    class DelayedProvider(TrackingProvider):
+        def __init__(self, *, failure: bool = False) -> None:
+            super().__init__([1.0])
+            self.failure = failure
+            self.started = asyncio.Event()
+
+        async def embed_query(self, query: str) -> list[float]:
+            self.started.set()
+            await asyncio.sleep(0.05)
+            if self.failure:
+                raise RuntimeError("embedding unavailable")
+            return self.vector
+
+    async def exercise():
+        timed_out = [
+            event
+            async for event in RagService(
+                FakeRetriever(),
+                DelayedProvider(),
+                embedding_dimensions=1,
+                embedding_timeout_seconds=0.001,
+            ).stream_query("Arnett", "req-timeout")
+        ]
+        assert timed_out[0].data["retrieval_mode"] == "lexical_degraded"
+
+        failed = [
+            event
+            async for event in RagService(
+                FakeRetriever(),
+                DelayedProvider(failure=True),
+                embedding_dimensions=1,
+                embedding_timeout_seconds=0.2,
+            ).stream_query("Arnett", "req-failure")
+        ]
+        assert failed[0].data["retrieval_mode"] == "lexical_degraded"
+
+        class BlockingProvider(DelayedProvider):
+            async def embed_query(self, query: str) -> list[float]:
+                self.started.set()
+                await asyncio.Event().wait()
+
+        import backend.service as service_module
+
+        original_within_budget = service_module._within_budget
+        calls = 0
+        hybrid_wait_started = asyncio.Event()
+
+        async def observed_within_budget(awaitable, *args):
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                hybrid_wait_started.set()
+            return await original_within_budget(awaitable, *args)
+
+        monkeypatch.setattr(service_module, "_within_budget", observed_within_budget)
+        cancelled_provider = BlockingProvider()
+        stream = RagService(
+            FakeRetriever(),
+            cancelled_provider,
+            embedding_dimensions=1,
+            embedding_timeout_seconds=0.2,
+        ).stream_query("Arnett", "req-cancelled")
+        pending = asyncio.create_task(anext(stream))
+        await cancelled_provider.started.wait()
+        await hybrid_wait_started.wait()
+        pending.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await pending
+
+    asyncio.run(exercise())
+
+
 def test_total_deadline_limits_embedding_then_stalled_generation_without_resetting_budget():
     class LexicalRetriever:
         def search_lexical(self, query: str):
