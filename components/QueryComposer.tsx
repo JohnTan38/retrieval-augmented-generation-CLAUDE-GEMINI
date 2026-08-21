@@ -30,7 +30,7 @@ export function QueryComposer({ disabled, onSubmit, busy = false, onCancel }: Qu
           {busy && onCancel ? <button type="button" className="cancel-query" onClick={onCancel}>Cancel request</button> : null}
         </div>
       </div>
-      <p>Searches will be grounded in the three SWK501 model-answer sets.</p>
+      <p>Searches are grounded in 6 documents · 132 pages across three SWK501 exam sets.</p>
     </form>
   )
 }

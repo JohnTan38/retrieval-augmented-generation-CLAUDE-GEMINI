@@ -9,6 +9,7 @@ from typing import Protocol
 
 
 DEFAULT_EMBEDDING_MODEL = "gemini-embedding-001"
+EMBEDDING_DIMENSIONS = 768
 MAX_BATCH_SIZE = 100
 MAX_TEXT_LENGTH = 20_000
 _TRANSIENT_STATUS_CODES = frozenset({429, 500, 502, 503, 504})
@@ -97,7 +98,7 @@ class GoogleEmbedder:
                 response = self._client.models.embed_content(
                     model=self.model,
                     contents=texts,
-                    config={"task_type": "RETRIEVAL_DOCUMENT"},
+                    config={"task_type": "RETRIEVAL_DOCUMENT", "output_dimensionality": EMBEDDING_DIMENSIONS},
                 )
                 embeddings = getattr(response, "embeddings", None)
                 if not isinstance(embeddings, list) or len(embeddings) != len(texts):

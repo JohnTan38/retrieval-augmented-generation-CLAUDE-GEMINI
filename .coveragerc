@@ -2,6 +2,7 @@
 branch = True
 source =
     backend
+    evaluation
     ingestion
 omit =
     api/index.py

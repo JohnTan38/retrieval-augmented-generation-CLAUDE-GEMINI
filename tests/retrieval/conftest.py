@@ -15,8 +15,8 @@ ROOT = Path(__file__).resolve().parents[2]
 class HashEmbedder:
     """Deterministic token-hash vectors used only to exercise hybrid retrieval."""
 
-    model = "test-hash-128"
-    dimensions = 128
+    model = "gemini-embedding-001"
+    dimensions = 768
 
     def embed_documents(self, texts: Sequence[str]) -> list[list[float]]:
         return [self.vector_for(text) for text in texts]
@@ -37,15 +37,15 @@ class HashEmbedder:
 
 @pytest.fixture
 def artifact_path(tmp_path: Path) -> Path:
-    output = tmp_path / "swk501-v1.json.gz"
+    output = tmp_path / "swk501-v2.json.gz"
     artifact = build_index(
         ROOT / "data" / "corpus-manifest.json",
         ROOT / "public" / "documents",
         output,
         HashEmbedder(),
     )
-    assert len(artifact.documents) == 3
-    assert len(artifact.chunks) == 93
+    assert len(artifact.documents) == 6
+    assert len(artifact.chunks) == 137
     return output
 
 

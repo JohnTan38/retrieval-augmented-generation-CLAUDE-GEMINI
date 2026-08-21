@@ -199,6 +199,7 @@ test.each([
   ['invalid error message', ['event: error\ndata: {"code":"failed","message":7,"retryable":true}\n\n']],
   ['invalid error retry flag', ['event: error\ndata: {"code":"failed","message":"Failed.","retryable":"yes"}\n\n']],
   ['invalid error retry delay', ['event: error\ndata: {"code":"failed","message":"Failed.","retryable":true,"retry_after_seconds":"soon"}\n\n']],
+  ['invalid error partial text', ['event: error\ndata: {"code":"failed","message":"Failed.","retryable":true,"partial_text":7}\n\n']],
 ])('rejects %s', async (_label, chunks) => {
   await expect(collect(responseFromChunks(chunks))).rejects.toBeInstanceOf(StreamClientError)
 })

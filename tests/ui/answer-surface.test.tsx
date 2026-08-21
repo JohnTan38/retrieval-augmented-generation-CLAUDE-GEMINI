@@ -54,6 +54,24 @@ test('identifies the exact occurrence when a source marker is repeated', async (
   expect(onCitationActivate).toHaveBeenCalledWith('S1', 'S1-1')
 })
 
+test('turns grouped source markers into individual evidence controls', async () => {
+  const onCitationActivate = vi.fn()
+  const user = userEvent.setup()
+  render(
+    <AnswerSurface
+      answer="The research and recall sources converge [S1, S3]."
+      citedSourceIds={['S1', 'S3']}
+      status="complete"
+      onCitationActivate={onCitationActivate}
+    />,
+  )
+
+  await user.click(screen.getByRole('button', { name: /source s3/i }))
+
+  expect(screen.getByRole('button', { name: /source s1/i })).toBeVisible()
+  expect(onCitationActivate).toHaveBeenCalledWith('S3', 'S3-0')
+})
+
 test('shows an integrity warning when completion marks citations invalid', () => {
   render(
     <AnswerSurface

@@ -13,6 +13,7 @@ const source = {
   filename: 'swk501-July2025-deep-research-model-answers.pdf',
   title: 'SWK501 July 2025 Deep-Research Model Answers',
   semester: 'July 2025',
+  variant: 'research',
   page: 9,
   excerpt: 'Arnett describes emerging adulthood as a distinct developmental period of exploration.',
   score: 0.91,
@@ -26,7 +27,7 @@ function event(name: string, data: object) {
 const tanArnettChunks = [
   event('sources', { request_id: 'e2e-tan-arnett', retrieval_mode: 'hybrid', sources: [source], timings: { retrieval_ms: 8 } }),
   event('token', { delta: 'This evidence-backed response applies Arnett to the Tan family [S1].' }),
-  event('complete', { request_id: 'e2e-tan-arnett', cited_source_ids: ['S1'], citation_valid: true, timings: { total_ms: 24 } }),
+  event('complete', { request_id: 'e2e-tan-arnett', cited_source_ids: ['S1'], citation_valid: true, generation_complete: true, timings: { total_ms: 24 } }),
 ] as const
 
 export const fixtures = {

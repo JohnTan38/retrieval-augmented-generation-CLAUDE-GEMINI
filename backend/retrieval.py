@@ -15,6 +15,10 @@ from ingestion.indexer import tokenize
 BM25_K1 = 1.2
 BM25_B = 0.75
 RRF_K = 60
+MIN_LEXICAL_RATIO = 0.65
+MIN_DENSE_SIMILARITY = 0.75
+NEAR_DUPLICATE_SIMILARITY = 0.92
+_ACTIVE_RECALL_MARKERS = ("active recall", "active-recall", "flashcard", "quiz", "drill", "recall prompt")
 
 
 @dataclass(frozen=True)
@@ -76,6 +80,62 @@ def reciprocal_rank_fusion(
     return [FusedResult(chunk_id=chunk_id, score=score) for chunk_id, score in sorted(scores.items(), key=lambda item: (-item[1], item[0]))]
 
 
+def supported_chunk_ids(lexical: Sequence[_ScoredChunk], dense: Sequence[_ScoredChunk]) -> set[str]:
+    """Keep candidates with strong relative lexical or absolute semantic support."""
+    strongest_lexical = lexical[0].score if lexical else 0.0
+    lexical_floor = strongest_lexical * MIN_LEXICAL_RATIO
+    lexical_scores = {item.chunk_id: item.score for item in lexical}
+    dense_scores = {item.chunk_id: item.score for item in dense}
+    return {
+        chunk_id
+        for chunk_id in lexical_scores.keys() | dense_scores.keys()
+        if (strongest_lexical > 0.0 and lexical_scores.get(chunk_id, 0.0) >= lexical_floor)
+        or dense_scores.get(chunk_id, 0.0) >= MIN_DENSE_SIMILARITY
+    }
+
+
+def prioritize_variants(
+    store: IndexStore, ranked: Sequence[FusedResult], query: str
+) -> list[FusedResult]:
+    """Keep the fused set intact while ordering its inferred paper and primary variant first."""
+
+    normalized_query = " ".join(query.lower().split())
+    preferred_variant = (
+        "claude"
+        if any(marker in normalized_query for marker in _ACTIVE_RECALL_MARKERS)
+        else "research"
+    )
+    primary = next(
+        (
+            store.chunks_by_id[result.chunk_id]
+            for result in ranked
+            if store.chunks_by_id[result.chunk_id].variant == preferred_variant
+        ),
+        None,
+    )
+    primary_semester = None if primary is None else primary.semester
+
+    def priority(result: FusedResult) -> int:
+        chunk = store.chunks_by_id[result.chunk_id]
+        same_semester = primary_semester is not None and chunk.semester == primary_semester
+        if same_semester and chunk.variant == preferred_variant:
+            return 0
+        if same_semester:
+            return 1
+        if chunk.variant == preferred_variant:
+            return 2
+        return 3
+
+    return sorted(
+        ranked,
+        key=lambda result: (
+            priority(result),
+            -result.score,
+            result.chunk_id,
+        ),
+    )
+
+
 def diversity_select(store: IndexStore, ranked: Sequence[FusedResult], *, top_k: int) -> list[DiverseResult]:
     """Keep one chunk per document/page and fill from remaining ranked evidence."""
     if isinstance(top_k, bool) or not isinstance(top_k, int) or not 1 <= top_k <= 5:
@@ -86,13 +146,33 @@ def diversity_select(store: IndexStore, ranked: Sequence[FusedResult], *, top_k:
         chunk = store.chunks_by_id.get(result.chunk_id)
         if chunk is None:
             raise ValueError("ranked result is absent from the index")
+        duplicate_position = _near_duplicate_position(store, selected, chunk)
+        if duplicate_position is not None:
+            previous = store.chunks_by_id[selected[duplicate_position].chunk_id]
+            if chunk.variant == "research" and previous.variant == "claude":
+                represented_pages.discard((previous.document_id, previous.page))
+                selected[duplicate_position] = DiverseResult(chunk_id=chunk.chunk_id, score=result.score, document_id=chunk.document_id, page=chunk.page)
+                represented_pages.add((chunk.document_id, chunk.page))
+            continue
         page_key = (chunk.document_id, chunk.page)
-        if page_key not in represented_pages:
+        if page_key not in represented_pages and len(selected) < top_k:
             selected.append(DiverseResult(chunk_id=chunk.chunk_id, score=result.score, document_id=chunk.document_id, page=chunk.page))
             represented_pages.add(page_key)
-            if len(selected) == top_k:
-                break
     return selected
+
+
+def _near_duplicate_position(store: IndexStore, selected: Sequence[DiverseResult], candidate: object) -> int | None:
+    for position, result in enumerate(selected):
+        existing = store.chunks_by_id[result.chunk_id]
+        if existing.semester == candidate.semester and _vector_similarity(existing.vector, candidate.vector) > NEAR_DUPLICATE_SIMILARITY:
+            return position
+    return None
+
+
+def _vector_similarity(first: Sequence[float], second: Sequence[float]) -> float:
+    if len(first) != len(second):
+        return -1.0
+    return sum(left * right for left, right in zip(first, second, strict=True))
 
 
 class HybridRetriever:
@@ -110,10 +190,12 @@ class HybridRetriever:
             raise ValueError("top_k must be between 1 and 5")
         lexical = bm25_rank(self._store, query)
         dense = [] if query_vector is None else cosine_rank(self._store, query_vector)
-        fused = reciprocal_rank_fusion([item.chunk_id for item in lexical], [item.chunk_id for item in dense])
+        supported = supported_chunk_ids(lexical, dense)
+        fused = reciprocal_rank_fusion([item.chunk_id for item in lexical if item.chunk_id in supported], [item.chunk_id for item in dense if item.chunk_id in supported])
         lexical_scores = {item.chunk_id: item.score for item in lexical}
         dense_scores = {item.chunk_id: item.score for item in dense}
-        return [_source_evidence(self._store, item, lexical_scores.get(item.chunk_id, 0.0), dense_scores.get(item.chunk_id, 0.0)) for item in diversity_select(self._store, fused, top_k=top_k)]
+        ranked = prioritize_variants(self._store, fused, query)
+        return [_source_evidence(self._store, item, lexical_scores.get(item.chunk_id, 0.0), dense_scores.get(item.chunk_id, 0.0)) for item in diversity_select(self._store, ranked, top_k=top_k)]
 
     def search_lexical(self, query: str, top_k: int = 5) -> list[SourceEvidence]:
         """Return immediately available lexical evidence with raw query-term support."""
@@ -122,9 +204,11 @@ class HybridRetriever:
         if isinstance(top_k, bool) or not isinstance(top_k, int) or not 1 <= top_k <= 5:
             raise ValueError("top_k must be between 1 and 5")
         lexical = bm25_rank(self._store, query)
-        fused = reciprocal_rank_fusion([item.chunk_id for item in lexical], [])
+        supported = supported_chunk_ids(lexical, [])
+        fused = reciprocal_rank_fusion([item.chunk_id for item in lexical if item.chunk_id in supported], [])
         lexical_scores = {item.chunk_id: item.score for item in lexical}
-        return [_source_evidence(self._store, item, lexical_scores[item.chunk_id]) for item in diversity_select(self._store, fused, top_k=top_k)]
+        ranked = prioritize_variants(self._store, fused, query)
+        return [_source_evidence(self._store, item, lexical_scores[item.chunk_id]) for item in diversity_select(self._store, ranked, top_k=top_k)]
 
 
 def _normalized_query_vector(query_vector: Sequence[float], dimensions: int) -> tuple[float, ...]:
@@ -146,7 +230,8 @@ def _normalized_query_vector(query_vector: Sequence[float], dimensions: int) -> 
 def _source_evidence(store: IndexStore, result: DiverseResult, lexical_score: float = 0.0, dense_score: float = 0.0) -> SourceEvidence:
     chunk = store.chunks_by_id[result.chunk_id]
     document = store.documents_by_id[chunk.document_id]
-    excerpt = " ".join(chunk.text.split())[:600]
+    content = " ".join(chunk.text.split())
+    excerpt = content[:1000]
     return SourceEvidence(
         source_id=chunk.chunk_id,
         chunk_id=chunk.chunk_id,
@@ -154,6 +239,7 @@ def _source_evidence(store: IndexStore, result: DiverseResult, lexical_score: fl
         filename=chunk.filename,
         title=document.title,
         semester=chunk.semester,
+        variant=chunk.variant,
         page=chunk.page,
         excerpt=excerpt,
         score=result.score,

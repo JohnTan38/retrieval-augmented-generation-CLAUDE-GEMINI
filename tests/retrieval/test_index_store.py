@@ -15,9 +15,9 @@ def test_loads_validated_artifact_once_and_exposes_precomputed_lookups(artifact_
     second = IndexStore.load(artifact_path)
 
     assert first is second
-    assert len(first.chunks_by_id) == 93
-    assert len(first.documents_by_id) == 3
-    assert len(first.vectors) == len(first.bm25_term_frequencies) == 93
+    assert len(first.chunks_by_id) == 137
+    assert len(first.documents_by_id) == 6
+    assert len(first.vectors) == len(first.bm25_term_frequencies) == 137
     assert len(first.fingerprint) == 64
 
 
@@ -44,12 +44,12 @@ def test_load_cache_is_thread_safe(artifact_path: Path) -> None:
 def test_detects_changed_or_corrupt_artifact_at_the_same_path(artifact_path: Path) -> None:
     original = IndexStore.load(artifact_path)
     artifact = read_artifact(artifact_path)
-    changed = artifact.model_copy(update={"corpus_version": "swk501-v2"})
+    changed = artifact.model_copy(update={"built_at": 42})
     write_artifact(artifact_path, changed)
 
     replacement = IndexStore.load(artifact_path)
     assert replacement is not original
-    assert replacement.corpus_version == "swk501-v2"
+    assert replacement.corpus_version == "swk501-2026-01-v2"
 
     artifact_path.write_bytes(b"not a gzip artifact")
     with pytest.raises(ValueError, match="index artifact"):
@@ -79,7 +79,7 @@ def test_cache_hit_uses_one_snapshot_when_path_is_replaced_after_read(artifact_p
 
     first = IndexStore.load(artifact_path)
     original_read = module._read_snapshot
-    replacement = read_artifact(artifact_path).model_copy(update={"corpus_version": "replacement"})
+    replacement = read_artifact(artifact_path).model_copy(update={"built_at": 99})
 
     def snapshot_then_replace(path: Path) -> bytes:
         snapshot = original_read(path)
@@ -89,7 +89,22 @@ def test_cache_hit_uses_one_snapshot_when_path_is_replaced_after_read(artifact_p
     monkeypatch.setattr(module, "_read_snapshot", snapshot_then_replace)
     assert IndexStore.load(artifact_path) is first
     monkeypatch.setattr(module, "_read_snapshot", original_read)
-    assert IndexStore.load(artifact_path).corpus_version == "replacement"
+    assert IndexStore.load(artifact_path).artifact.built_at == 99
+
+
+def test_rejects_nonproduction_dense_metadata_and_manifest_drift(artifact_path: Path) -> None:
+    artifact = read_artifact(artifact_path)
+    invalid_cases = [
+        artifact.model_copy(update={"embedding_model": "test-hash-768"}),
+        artifact.model_copy(update={"corpus_version": "swk501-2026-01-v1"}),
+        artifact.model_copy(update={"documents": (artifact.documents[0].model_copy(update={"sha256": "f" * 64}),) + artifact.documents[1:]}),
+        artifact.model_copy(update={"chunks": artifact.chunks[:-1]}),
+    ]
+    for invalid in invalid_cases:
+        write_artifact(artifact_path, invalid)
+        with pytest.raises(ValueError, match="index artifact"):
+            IndexStore.load(artifact_path)
+    write_artifact(artifact_path, artifact)
 
 
 def test_rejects_a_corrupt_snapshot_without_reopening_the_path(artifact_path: Path, monkeypatch) -> None:
@@ -126,3 +141,17 @@ def test_store_rejects_constructed_artifact_integrity_corruption(artifact_path: 
     for invalid in invalid_cases:
         with pytest.raises(ValueError):
             IndexStore._validate_artifact(invalid)
+
+
+def test_store_rejects_an_artifact_that_omits_one_manifest_page(artifact_path: Path) -> None:
+    artifact = read_artifact(artifact_path)
+    by_page = {}
+    for chunk in artifact.chunks:
+        by_page.setdefault((chunk.document_id, chunk.page), []).append(chunk)
+    omitted = next(chunks[0] for chunks in by_page.values() if len(chunks) == 1)
+    replacement_source = next(chunk for chunk in artifact.chunks if chunk.chunk_id != omitted.chunk_id)
+    replacement = replacement_source.model_copy(update={"chunk_id": "e" * 24})
+    chunks = tuple(chunk for chunk in artifact.chunks if chunk.chunk_id != omitted.chunk_id) + (replacement,)
+
+    with pytest.raises(ValueError, match="cover every manifest page"):
+        IndexStore._validate_artifact(artifact.model_copy(update={"chunks": chunks}))

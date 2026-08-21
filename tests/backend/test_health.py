@@ -1,7 +1,7 @@
 def test_health_reports_injected_index(client):
     response = client.get("/api/health")
     assert response.status_code == 200
-    assert response.json() == {"ready": True, "schema_version": 1, "corpus_version": "swk501-2026-01-v1", "documents": 1, "pages": 27, "status": "ready"}
+    assert response.json() == {"ready": True, "schema_version": 1, "corpus_version": "swk501-2026-01-v2", "documents": 1, "pages": 27, "chunks": 0, "dense_index_ready": True, "generation_ready": True, "status": "ready"}
 
 
 def test_default_app_is_safe_without_artifact(monkeypatch):

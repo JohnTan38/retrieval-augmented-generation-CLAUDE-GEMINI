@@ -38,6 +38,12 @@ class BlankProvider:
         yield "Claim [S1]."
 
 
+class TwoTokenProvider(BlankProvider):
+    async def stream_answer(self, query: str, sources):
+        yield "Claim "
+        yield "[S1]."
+
+
 def test_service_timeout_and_cancellation_close_upstream_iterator():
     async def exercise():
         timeout = RagService(FakeRetriever(), SlowProvider(), generation_timeout_seconds=0.0001)
@@ -49,6 +55,8 @@ def test_service_timeout_and_cancellation_close_upstream_iterator():
         stream = service.stream_query("Arnett", "req")
         first = await anext(stream)
         assert first.name == "sources"
+        preamble = await anext(stream)
+        assert preamble.data["delta"] == "## Evidence-backed answer\n\n"
         pending = asyncio.create_task(anext(stream))
         await asyncio.sleep(0)
         pending.cancel()
@@ -69,19 +77,39 @@ def test_service_handles_retrieval_failure_blank_deltas_and_total_budget():
 
         blank = RagService(FakeRetriever(), BlankProvider())
         blank_events = [event async for event in blank.stream_query("Arnett", "req")]
-        assert [event.name for event in blank_events] == ["sources", "token", "complete"]
+        assert [event.name for event in blank_events] == ["sources", "token", "token", "complete"]
 
         over_budget = RagService(FakeRetriever(), BlankProvider(), total_timeout_seconds=-1)
         budget_events = [event async for event in over_budget.stream_query("Arnett", "req")]
         assert budget_events[-1].data["code"] == "generation_timeout"
 
-        ticks = iter((0.0, 0.0, 0.0, 0.0, 0.0, 2.0))
+        class StreamDeadlineClock:
+            expired = False
+
+            def __call__(self):
+                return 2.0 if self.expired else 0.0
+
+        class ExpiresWhileStreaming(BlankProvider):
+            async def stream_answer(self, query: str, sources):
+                deadline_clock.expired = True
+                yield "Claim [S1]."
+
+        deadline_clock = StreamDeadlineClock()
         during_stream = RagService(
-            FakeRetriever(), BlankProvider(), total_timeout_seconds=1,
-            clock=lambda: next(ticks, 2.0),
+            FakeRetriever(), ExpiresWhileStreaming(), total_timeout_seconds=1,
+            clock=deadline_clock,
         )
         stream_budget_events = [event async for event in during_stream.stream_query("Arnett", "req")]
         assert stream_budget_events[-1].data["code"] == "generation_timeout"
+
+    asyncio.run(exercise())
+
+
+def test_service_records_first_token_timing_only_once_across_multiple_deltas():
+    async def exercise():
+        events = [event async for event in RagService(FakeRetriever(), TwoTokenProvider()).stream_query("Arnett", "req")]
+        assert [event.name for event in events] == ["sources", "token", "token", "token", "complete"]
+        assert events[-1].data["timings"]["first_token_ms"] <= events[-1].data["timings"]["total_ms"]
 
     asyncio.run(exercise())
 

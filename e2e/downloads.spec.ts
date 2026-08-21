@@ -13,7 +13,7 @@ const manifest = JSON.parse(
 
 
 test('serves every checked corpus download as the exact PDF', async ({ request }) => {
-  expect(manifest.documents).toHaveLength(3)
+  expect(manifest.documents).toHaveLength(6)
 
   for (const document of manifest.documents) {
     const response = await request.get(document.download_url)

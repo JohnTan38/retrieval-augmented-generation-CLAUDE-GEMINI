@@ -9,13 +9,19 @@ import httpx
 import pytest
 from pydantic import ValidationError
 
-from evaluation.quality import QualityReport, assert_quality_thresholds
+from evaluation.quality import (
+    LatencyReport,
+    QualityReport,
+    assert_latency_thresholds,
+    assert_quality_thresholds,
+)
 from evaluation import run_quality as quality_runner
 from evaluation.run_quality import (
     EvaluationSample,
     evaluate_with_metrics,
     fetch_query,
     load_golden_queries,
+    latency_report,
     run_evaluation,
 )
 
@@ -25,6 +31,14 @@ REQUIRED_FLOORS = {
     "answer_relevance": 0.80,
     "context_precision": 0.80,
     "citation_validity": 1.00,
+    "retrieval_hit_rate": 1.00,
+    "successful_completion_rate": 1.00,
+}
+
+REQUIRED_LATENCY_CEILINGS = {
+    "sources_p95_ms": 1500,
+    "first_token_p95_ms": 3000,
+    "complete_p95_ms": 15000,
 }
 
 
@@ -36,6 +50,22 @@ def test_quality_thresholds_accept_every_required_floor() -> None:
     assert_quality_thresholds(required_report())
 
 
+def test_latency_thresholds_accept_ceilings_and_reject_each_overage() -> None:
+    report = LatencyReport(**REQUIRED_LATENCY_CEILINGS)
+    assert_latency_thresholds(report)
+
+    for field, ceiling in REQUIRED_LATENCY_CEILINGS.items():
+        with pytest.raises(AssertionError, match=field):
+            assert_latency_thresholds(report.model_copy(update={field: ceiling + 1}))
+
+
+@pytest.mark.parametrize("field", REQUIRED_LATENCY_CEILINGS)
+@pytest.mark.parametrize("value", [-1, math.inf, -math.inf, math.nan])
+def test_latency_report_rejects_negative_or_nonfinite_values(field: str, value: float) -> None:
+    with pytest.raises(ValidationError, match=field):
+        LatencyReport(**(REQUIRED_LATENCY_CEILINGS | {field: value}))
+
+
 @pytest.mark.parametrize(
     ("field", "value"),
     [
@@ -43,6 +73,8 @@ def test_quality_thresholds_accept_every_required_floor() -> None:
         ("answer_relevance", 0.799),
         ("context_precision", 0.799),
         ("citation_validity", 0.999),
+        ("retrieval_hit_rate", 0.999),
+        ("successful_completion_rate", 0.999),
     ],
 )
 def test_quality_thresholds_reject_each_score_below_its_floor(
@@ -79,6 +111,7 @@ def complete_sse(*, citation_valid: bool = True) -> str:
         "filename": "swk501-July2025-deep-research-model-answers.pdf",
         "title": "SWK501 July 2025 Deep-Research Model Answers",
         "semester": "July 2025",
+        "variant": "research",
         "page": 8,
         "excerpt": "Arnett describes emerging adulthood as a period of exploration.",
         "score": 0.92,
@@ -88,9 +121,22 @@ def complete_sse(*, citation_valid: bool = True) -> str:
         ("sources", {"request_id": "req-eval-1", "retrieval_mode": "hybrid", "sources": [source], "timings": {"retrieval_ms": 7}}),
         ("token", {"delta": "Arnett emphasizes exploration "}),
         ("token", {"delta": "during emerging adulthood [S1]."}),
-        ("complete", {"request_id": "req-eval-1", "timings": {"total_ms": 22}, "cited_source_ids": ["S1"], "citation_valid": citation_valid}),
+        ("complete", {"request_id": "req-eval-1", "timings": {"first_token_ms": 12, "total_ms": 22}, "cited_source_ids": ["S1"], "citation_valid": citation_valid, "generation_complete": True}),
     ]
     return "".join(f"event: {name}\ndata: {json.dumps(data)}\n\n" for name, data in events)
+
+
+def stream_clock(*, sources_ms: float = 7, first_token_ms: float = 12, complete_ms: float = 22):
+    offsets = (0.0, sources_ms / 1000, first_token_ms / 1000, first_token_ms / 1000, complete_ms / 1000)
+    calls = 0
+
+    def clock() -> float:
+        nonlocal calls
+        query, stage = divmod(calls, len(offsets))
+        calls += 1
+        return query * 60.0 + offsets[stage]
+
+    return clock
 
 
 def golden_entries() -> list[dict[str, object]]:
@@ -102,7 +148,7 @@ def golden_entries() -> list[dict[str, object]]:
             "expected_topic": "identity",
             "expected_page_range": [12, 15],
         }
-        for index in range(7)
+        for index in range(10)
     ]
 
 
@@ -121,7 +167,7 @@ def test_fetch_query_calls_the_real_sse_contract_and_collects_one_safe_sample() 
         return httpx.Response(200, headers={"content-type": "text/event-stream"}, text=complete_sse())
 
     with httpx.Client(transport=httpx.MockTransport(endpoint), base_url="https://study.invalid") as client:
-        sample = fetch_query(client, "https://study.invalid", "tan-arnett", "How does Arnett apply?")
+        sample = fetch_query(client, "https://study.invalid", "tan-arnett", "How does Arnett apply?", clock=stream_clock())
 
     assert sample == EvaluationSample(
         query_id="tan-arnett",
@@ -131,12 +177,62 @@ def test_fetch_query_calls_the_real_sse_contract_and_collects_one_safe_sample() 
         source_ids=["S1"],
         cited_source_ids=["S1"],
         citation_valid=True,
+        retrieval_hit=True,
+        generation_complete=True,
+        sources_ms=7,
+        first_token_ms=12,
+        complete_ms=22,
     )
+
+
+def test_fetch_query_uses_client_event_arrival_instead_of_server_reported_timings() -> None:
+    transport = httpx.MockTransport(lambda _: httpx.Response(200, text=complete_sse()))
+    with httpx.Client(transport=transport) as client:
+        sample = fetch_query(
+            client,
+            "https://study.invalid",
+            "latency",
+            "Question",
+            clock=stream_clock(sources_ms=101, first_token_ms=202, complete_ms=303),
+        )
+    assert (sample.sources_ms, sample.first_token_ms, sample.complete_ms) == (101, 202, 303)
+
+
+def test_latency_report_uses_nearest_rank_p95_for_all_live_samples() -> None:
+    samples = [
+        EvaluationSample("q", "Q", "A [S1]", ["E"], ["S1"], ["S1"], True, sources_ms=i, first_token_ms=i * 2, complete_ms=i * 3)
+        for i in range(1, 21)
+    ]
+    assert latency_report(samples) == LatencyReport(
+        sources_p95_ms=19,
+        first_token_p95_ms=38,
+        complete_p95_ms=57,
+    )
+
+
+def test_latency_report_requires_samples() -> None:
+    with pytest.raises(ValueError, match="requires samples"):
+        latency_report([])
+
+
+def test_latency_report_rejects_missing_or_invalid_server_timings() -> None:
+    sample = EvaluationSample("q", "Q", "A [S1]", ["E"], ["S1"], ["S1"], True)
+    with pytest.raises(ValueError, match="valid server timings"):
+        latency_report([sample])
+
+
 
 
 def test_event_parser_accepts_crlf_multiline_data_and_ignores_empty_blocks() -> None:
     blocks = list(quality_runner._event_blocks('\r\n\r\n: keepalive\r\nevent: token\r\ndata: {"delta":\r\ndata: "answer"}\r\n\r\n'))
     assert blocks == [("token", {"delta": "answer"})]
+
+
+def test_timed_event_parser_flushes_a_final_block_without_a_blank_line() -> None:
+    response = httpx.Response(200, text='\n\nevent: token\ndata: {"delta":"answer"}')
+    assert list(quality_runner._timed_event_blocks(response, 1.0, lambda: 1.025)) == [
+        ("token", {"delta": "answer"}, 25.0),
+    ]
 
 
 @pytest.mark.parametrize(
@@ -188,7 +284,7 @@ def test_fetch_query_propagates_http_failures() -> None:
         ('event: sources\ndata: {"request_id":"r","sources":[{"source_id":"bad","excerpt":"ok"}]}\n\n', "invalid source evidence"),
         ('event: sources\ndata: {"request_id":"r","sources":[{"source_id":"S1","excerpt":""}]}\n\n', "invalid source evidence"),
         (
-            'event: sources\ndata: {"request_id":"r","sources":[{"source_id":"S1","excerpt":"one"},{"source_id":"S1","excerpt":"two"}]}\n\n',
+            'event: sources\ndata: {"request_id":"r","sources":[{"source_id":"S1","document_id":"doc","page":1,"variant":"research","excerpt":"one"},{"source_id":"S1","document_id":"doc","page":2,"variant":"research","excerpt":"two"}]}\n\n',
             "duplicate source evidence",
         ),
         ('event: token\ndata: {"delta":"early"}\n\n', "invalid token"),
@@ -201,7 +297,7 @@ def test_fetch_query_propagates_http_failures() -> None:
         ('event: error\ndata: {"message":7}\n\n', "reported an error"),
         ('event: error\ndata: {"message":""}\n\n', "reported an error"),
         (
-            'event: sources\ndata: {"request_id":"r","sources":[]}\n\nevent: complete\ndata: {"cited_source_ids":[],"citation_valid":true}\n\nevent: token\ndata: {"delta":"late"}\n\n',
+            'event: sources\ndata: {"request_id":"r","sources":[]}\n\nevent: complete\ndata: {"cited_source_ids":[],"citation_valid":true,"generation_complete":true}\n\nevent: token\ndata: {"delta":"late"}\n\n',
             "events after completion",
         ),
     ],
@@ -224,26 +320,43 @@ def test_fetch_query_rejects_each_invalid_contract_shape(body: str, message: str
 def test_fetch_query_marks_every_invalid_citation_relationship(
     answer: str, cited: list[str], server_valid: bool
 ) -> None:
-    source = {"source_id": "S1", "excerpt": "Evidence"}
+    source = {"source_id": "S1", "document_id": "doc", "page": 1, "variant": "research", "excerpt": "Evidence"}
     body = (
         f'event: sources\ndata: {json.dumps({"request_id": "r", "sources": [source]})}\n\n'
         f'event: token\ndata: {json.dumps({"delta": answer})}\n\n'
-        f'event: complete\ndata: {json.dumps({"cited_source_ids": cited, "citation_valid": server_valid})}\n\n'
+        f'event: complete\ndata: {json.dumps({"cited_source_ids": cited, "citation_valid": server_valid, "generation_complete": True})}\n\n'
     )
     assert fetch_body(body).citation_valid is False
 
 
-def test_load_golden_queries_requires_exactly_seven_unique_safe_entries(tmp_path: Path) -> None:
+def test_fetch_query_accepts_grouped_citations_using_the_runtime_parser() -> None:
+    sources = [
+        {"source_id": source_id, "document_id": "doc", "page": page, "variant": "research", "excerpt": "Evidence"}
+        for source_id, page in (("S1", 1), ("S2", 2))
+    ]
+    body = (
+        f'event: sources\ndata: {json.dumps({"request_id": "r", "sources": sources})}\n\n'
+        'event: token\ndata: {"delta":"Supported comparison [S1, S2]."}\n\n'
+        'event: complete\ndata: {"cited_source_ids":["S1","S2"],"citation_valid":true,"generation_complete":true}\n\n'
+    )
+
+    sample = fetch_body(body)
+
+    assert sample.citation_valid is True
+    assert sample.cited_source_ids == ["S1", "S2"]
+
+
+def test_load_golden_queries_requires_exactly_ten_unique_safe_entries(tmp_path: Path) -> None:
     golden_path = tmp_path / "golden.json"
     entries = golden_entries()
     golden_path.write_text(json.dumps(entries), encoding="utf-8")
 
     loaded = load_golden_queries(golden_path)
-    assert [item.query_id for item in loaded] == [f"query-{index}" for index in range(7)]
+    assert [item.query_id for item in loaded] == [f"query-{index}" for index in range(10)]
 
     entries[-1]["id"] = "query-0"
     golden_path.write_text(json.dumps(entries), encoding="utf-8")
-    with pytest.raises(ValueError, match="seven unique"):
+    with pytest.raises(ValueError, match="ten unique"):
         load_golden_queries(golden_path)
 
 
@@ -274,7 +387,7 @@ def test_load_golden_queries_rejects_each_unsafe_entry_shape(tmp_path: Path, rep
     golden_path = tmp_path / "golden.json"
     golden_path.write_text(json.dumps(entries), encoding="utf-8")
 
-    with pytest.raises(ValueError, match="seven unique"):
+    with pytest.raises(ValueError, match="ten unique"):
         load_golden_queries(golden_path)
 
 
@@ -282,7 +395,7 @@ def test_load_golden_queries_rejects_each_unsafe_entry_shape(tmp_path: Path, rep
 def test_load_golden_queries_rejects_non_list_or_wrong_count(tmp_path: Path, payload: object) -> None:
     golden_path = tmp_path / "golden.json"
     golden_path.write_text(json.dumps(payload), encoding="utf-8")
-    with pytest.raises(ValueError, match="exactly seven"):
+    with pytest.raises(ValueError, match="exactly ten"):
         load_golden_queries(golden_path)
 
 
@@ -327,6 +440,8 @@ async def test_evaluate_with_metrics_uses_current_ragas_contracts_and_aggregates
         answer_relevance=0.8,
         context_precision=0.8,
         citation_validity=0.5,
+        retrieval_hit_rate=1.0,
+        successful_completion_rate=1.0,
     )
 
 
@@ -474,7 +589,11 @@ def test_build_ragas_scorer_constructs_current_clients_metrics_and_closes_them()
     assert events == [
         ("judge-client", {"api_key": "secret-key", "base_url": quality_runner.GEMINI_OPENAI_BASE_URL}),
         ("embedding-client", {"api_key": "secret-key"}),
-        ("llm-factory", ("gemini-judge",), {"provider": "openai", "client": ANY}),
+        (
+            "llm-factory",
+            ("gemini-judge",),
+            {"provider": "openai", "client": ANY, "max_tokens": quality_runner.JUDGE_MAX_TOKENS},
+        ),
         ("embedding-factory", ("google",), {"model": "gemini-embedding-001", "client": ANY, "interface": "modern"}),
         ("faithfulness", {"llm": "llm"}),
         ("relevance", {"llm": "llm", "embeddings": "embeddings"}),
@@ -503,7 +622,7 @@ def test_run_evaluation_writes_only_aggregate_scores_and_safe_identifiers(tmp_pa
     output_path = tmp_path / "quality.json"
     entries = [
         {"id": f"safe-{index}", "query": f"private prompt {index}", "expected_documents": ["jan-2026"], "expected_topic": "topic", "expected_page_range": [1, 2]}
-        for index in range(7)
+        for index in range(10)
     ]
     golden_path.write_text(json.dumps(entries), encoding="utf-8")
 
@@ -511,7 +630,7 @@ def test_run_evaluation_writes_only_aggregate_scores_and_safe_identifiers(tmp_pa
         return httpx.Response(200, text=complete_sse())
 
     def scorer(samples: list[EvaluationSample]) -> QualityReport:
-        assert len(samples) == 7
+        assert len(samples) == 10
         return required_report()
 
     with httpx.Client(transport=httpx.MockTransport(endpoint)) as client:
@@ -522,17 +641,19 @@ def test_run_evaluation_writes_only_aggregate_scores_and_safe_identifiers(tmp_pa
             judge_model="gemini-evaluator",
             scorer=scorer,
             client=client,
+            clock=stream_clock(),
         )
 
     payload = json.loads(output_path.read_text(encoding="utf-8"))
     assert exit_code == 0
     assert payload == {
         "schema_version": 1,
-        "evaluation_id": "sgcare-golden-v1",
+        "evaluation_id": "sgcare-golden-v2",
         "judge_model": "gemini-evaluator",
-        "golden_query_ids": [f"safe-{index}" for index in range(7)],
-        "query_count": 7,
+        "golden_query_ids": [f"safe-{index}" for index in range(10)],
+        "query_count": 10,
         "scores": REQUIRED_FLOORS,
+        "latency_p95_ms": {"complete_p95_ms": 22, "first_token_p95_ms": 12, "sources_p95_ms": 7},
         "passed": True,
     }
     serialized = output_path.read_text(encoding="utf-8")
@@ -546,7 +667,7 @@ def test_run_evaluation_writes_failed_aggregates_and_exits_nonzero(tmp_path: Pat
     output_path = tmp_path / "quality.json"
     entries = [
         {"id": f"safe-{index}", "query": f"Question {index}", "expected_documents": ["jan-2026"], "expected_topic": "topic", "expected_page_range": [1, 2]}
-        for index in range(7)
+        for index in range(10)
     ]
     golden_path.write_text(json.dumps(entries), encoding="utf-8")
     transport = httpx.MockTransport(lambda _: httpx.Response(200, text=complete_sse()))
@@ -565,6 +686,24 @@ def test_run_evaluation_writes_failed_aggregates_and_exits_nonzero(tmp_path: Pat
     assert exit_code == 1
     assert payload["passed"] is False
     assert payload["scores"]["faithfulness"] == 0.84
+
+
+def test_run_evaluation_fails_when_live_latency_exceeds_a_ceiling(tmp_path: Path) -> None:
+    golden_path = tmp_path / "golden.json"
+    output_path = tmp_path / "quality.json"
+    golden_path.write_text(json.dumps(golden_entries()), encoding="utf-8")
+    with httpx.Client(transport=httpx.MockTransport(lambda _: httpx.Response(200, text=complete_sse()))) as client:
+        exit_code = run_evaluation(
+            base_url="https://study.invalid",
+            golden_path=golden_path,
+            output_path=output_path,
+            judge_model="gemini-evaluator",
+            scorer=lambda _: required_report(),
+            client=client,
+            clock=stream_clock(complete_ms=15001),
+        )
+    assert exit_code == 1
+    assert json.loads(output_path.read_text(encoding="utf-8"))["passed"] is False
 
 
 def test_parse_args_applies_defaults_and_accepts_explicit_overrides() -> None:

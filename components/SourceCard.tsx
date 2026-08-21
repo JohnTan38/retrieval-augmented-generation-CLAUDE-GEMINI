@@ -17,7 +17,10 @@ export const SourceCard = forwardRef<HTMLElement, SourceCardProps>(function Sour
           Select evidence {source.source_id}
         </button>
       </div>
-      <p className="semester-label">{source.semester} · page {source.page}</p>
+      <div className="source-context">
+        <p className="semester-label">{source.semester} · page {source.page}</p>
+        <span className="variant-badge" data-variant={source.variant}>{source.variant === 'research' ? 'Research source' : 'CLAUDE recall'}</span>
+      </div>
       <h3>{source.title}</h3>
       <blockquote>{source.excerpt}</blockquote>
       <div className="source-card-footer">

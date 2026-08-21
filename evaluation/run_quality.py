@@ -12,6 +12,7 @@ import json
 import math
 import os
 import re
+import time
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -20,15 +21,21 @@ from typing import Any, Protocol
 
 import httpx
 
-from evaluation.quality import QualityReport, assert_quality_thresholds
+from backend.citation import validate_citations
+from evaluation.quality import (
+    LatencyReport,
+    QualityReport,
+    assert_latency_thresholds,
+    assert_quality_thresholds,
+)
 
 
-GOLDEN_QUERY_COUNT = 7
-EVALUATION_ID = "sgcare-golden-v1"
-DEFAULT_JUDGE_MODEL = "gemini-3.5-flash-lite"
+GOLDEN_QUERY_COUNT = 10
+EVALUATION_ID = "sgcare-golden-v2"
+DEFAULT_JUDGE_MODEL = "gemini-3.6-flash"
 GEMINI_OPENAI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai/"
+JUDGE_MAX_TOKENS = 8192
 _SOURCE_ID = re.compile(r"S[1-9][0-9]*")
-_CITATION = re.compile(r"\[(S[1-9][0-9]*)\]")
 
 
 @dataclass(frozen=True)
@@ -49,6 +56,11 @@ class EvaluationSample:
     source_ids: list[str]
     cited_source_ids: list[str]
     citation_valid: bool
+    retrieval_hit: bool = True
+    generation_complete: bool = True
+    sources_ms: float = -1.0
+    first_token_ms: float = -1.0
+    complete_ms: float = -1.0
 
 
 class RagasMetric(Protocol):
@@ -72,17 +84,17 @@ class RagasRuntime:
 
 
 def load_golden_queries(path: Path) -> list[GoldenQuery]:
-    """Load and strictly validate the fixed seven-query evaluation set."""
+    """Load and strictly validate the fixed ten-query evaluation set."""
 
     raw: Any = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(raw, list) or len(raw) != GOLDEN_QUERY_COUNT:
-        raise ValueError("quality evaluation requires exactly seven unique golden queries")
+        raise ValueError("quality evaluation requires exactly ten unique golden queries")
 
     queries: list[GoldenQuery] = []
     identifiers: set[str] = set()
     for item in raw:
         if not isinstance(item, dict):
-            raise ValueError("quality evaluation requires exactly seven unique golden queries")
+            raise ValueError("quality evaluation requires exactly ten unique golden queries")
         query_id = item.get("id")
         query = item.get("query")
         documents = item.get("expected_documents")
@@ -107,7 +119,7 @@ def load_golden_queries(path: Path) -> list[GoldenQuery]:
             or not topic.strip()
             or not valid_page_range
         ):
-            raise ValueError("quality evaluation requires exactly seven unique golden queries")
+            raise ValueError("quality evaluation requires exactly ten unique golden queries")
         identifiers.add(query_id)
         queries.append(GoldenQuery(
             query_id=query_id,
@@ -141,21 +153,50 @@ def _event_blocks(body: str) -> Iterable[tuple[str, dict[str, Any]]]:
         yield event_name, data
 
 
+def _timed_event_blocks(
+    response: httpx.Response,
+    started: float,
+    clock: Callable[[], float],
+) -> Iterable[tuple[str, dict[str, Any], float]]:
+    """Yield SSE blocks as they arrive, timestamped at the evaluation client."""
+
+    lines: list[str] = []
+    for line in response.iter_lines():
+        if line:
+            lines.append(line)
+            continue
+        if lines:
+            body = "\n".join(lines) + "\n\n"
+            lines.clear()
+            for event_name, data in _event_blocks(body):
+                yield event_name, data, round(max(0.0, (clock() - started) * 1000), 3)
+    if lines:
+        for event_name, data in _event_blocks("\n".join(lines)):
+            yield event_name, data, round(max(0.0, (clock() - started) * 1000), 3)
+
+
 def fetch_query(
     client: httpx.Client,
     base_url: str,
     query_id: str,
     query: str,
+    expected_documents: Sequence[str] = (),
+    expected_page_range: tuple[int, int] | None = None,
+    *,
+    clock: Callable[[], float] = time.monotonic,
 ) -> EvaluationSample:
     """Call the real query route and reduce its source-first SSE response to one sample."""
 
-    response = client.post(
+    started = clock()
+    with client.stream(
+        "POST",
         f"{base_url.rstrip('/')}/api/query",
         json={"query": query},
         headers={"Accept": "text/event-stream"},
         timeout=60.0,
-    )
-    response.raise_for_status()
+    ) as response:
+        response.raise_for_status()
+        streamed_events = list(_timed_event_blocks(response, started, clock))
 
     sources_seen = False
     terminal_seen = False
@@ -164,8 +205,13 @@ def fetch_query(
     source_ids: list[str] = []
     cited_source_ids: list[str] = []
     server_citation_valid = False
+    server_generation_complete = False
+    retrieved_locations: list[tuple[str, int]] = []
+    sources_ms = -1.0
+    first_token_ms = -1.0
+    complete_ms = -1.0
 
-    for event_name, data in _event_blocks(response.text):
+    for event_name, data, arrival_ms in streamed_events:
         if terminal_seen:
             raise RuntimeError("The quality endpoint returned events after completion.")
         if event_name == "sources":
@@ -177,25 +223,35 @@ def fetch_query(
                     raise RuntimeError("The quality endpoint returned invalid source evidence.")
                 source_id = source.get("source_id")
                 excerpt = source.get("excerpt")
-                if not isinstance(source_id, str) or not _SOURCE_ID.fullmatch(source_id) or not isinstance(excerpt, str) or not excerpt.strip():
+                document_id = source.get("document_id")
+                page = source.get("page")
+                variant = source.get("variant")
+                if not isinstance(source_id, str) or not _SOURCE_ID.fullmatch(source_id) or not isinstance(excerpt, str) or not excerpt.strip() or not isinstance(document_id, str) or not isinstance(page, int) or isinstance(page, bool) or page <= 0 or variant not in {"research", "claude"}:
                     raise RuntimeError("The quality endpoint returned invalid source evidence.")
                 source_ids.append(source_id)
                 contexts.append(excerpt)
+                retrieved_locations.append((document_id, page))
             if len(source_ids) != len(set(source_ids)):
                 raise RuntimeError("The quality endpoint returned duplicate source evidence.")
+            sources_ms = arrival_ms
             sources_seen = True
         elif event_name == "token":
             delta = data.get("delta")
             if not sources_seen or not isinstance(delta, str):
                 raise RuntimeError("The quality endpoint returned an invalid token event.")
+            if first_token_ms < 0:
+                first_token_ms = arrival_ms
             answer_parts.append(delta)
         elif event_name == "complete":
             raw_cited = data.get("cited_source_ids")
             raw_valid = data.get("citation_valid")
-            if not sources_seen or not isinstance(raw_cited, list) or any(not isinstance(item, str) for item in raw_cited) or not isinstance(raw_valid, bool):
+            raw_generation_complete = data.get("generation_complete")
+            if not sources_seen or not isinstance(raw_cited, list) or any(not isinstance(item, str) for item in raw_cited) or not isinstance(raw_valid, bool) or not isinstance(raw_generation_complete, bool):
                 raise RuntimeError("The quality endpoint returned an invalid complete event.")
             cited_source_ids = list(raw_cited)
             server_citation_valid = raw_valid
+            server_generation_complete = raw_generation_complete
+            complete_ms = arrival_ms
             terminal_seen = True
         elif event_name == "error":
             message = data.get("message")
@@ -207,14 +263,20 @@ def fetch_query(
     if not sources_seen or not terminal_seen:
         raise RuntimeError("The quality endpoint returned an incomplete event stream.")
     answer = "".join(answer_parts)
-    answer_citations = list(dict.fromkeys(_CITATION.findall(answer)))
+    parsed_citations = validate_citations(answer, set(source_ids))
+    answer_citations = parsed_citations.cited_source_ids
     citation_valid = (
         server_citation_valid
+        and parsed_citations.valid
         and bool(answer.strip())
         and bool(answer_citations)
         and answer_citations == cited_source_ids
         and all(source_id in source_ids for source_id in cited_source_ids)
     )
+    retrieval_hit = True
+    if expected_documents and expected_page_range is not None:
+        first_page, last_page = expected_page_range
+        retrieval_hit = any(document_id in expected_documents and first_page <= page <= last_page for document_id, page in retrieved_locations)
     return EvaluationSample(
         query_id=query_id,
         query=query,
@@ -223,6 +285,30 @@ def fetch_query(
         source_ids=source_ids,
         cited_source_ids=cited_source_ids,
         citation_valid=citation_valid,
+        retrieval_hit=retrieval_hit,
+        generation_complete=server_generation_complete,
+        sources_ms=sources_ms,
+        first_token_ms=first_token_ms,
+        complete_ms=complete_ms,
+    )
+
+
+def latency_report(samples: Sequence[EvaluationSample]) -> LatencyReport:
+    """Compute nearest-rank p95 milestones from the same ten live RAG calls."""
+
+    if not samples:
+        raise ValueError("latency evaluation requires samples")
+
+    def p95(field: str) -> float:
+        values = sorted(float(getattr(sample, field)) for sample in samples)
+        if any(not math.isfinite(value) or value < 0 for value in values):
+            raise ValueError("latency evaluation requires valid server timings")
+        return values[math.ceil(0.95 * len(values)) - 1]
+
+    return LatencyReport(
+        sources_p95_ms=p95("sources_ms"),
+        first_token_p95_ms=p95("first_token_ms"),
+        complete_p95_ms=p95("complete_ms"),
     )
 
 
@@ -267,6 +353,8 @@ async def evaluate_with_metrics(
         answer_relevance=fmean(relevance_scores),
         context_precision=fmean(precision_scores),
         citation_validity=fmean(float(sample.citation_valid) for sample in samples),
+        retrieval_hit_rate=fmean(float(sample.retrieval_hit) for sample in samples),
+        successful_completion_rate=fmean(float(sample.generation_complete) for sample in samples),
     )
 
 
@@ -304,7 +392,12 @@ def build_ragas_scorer(
     runtime = runtime or _load_ragas_runtime()
     judge_client = runtime.async_openai(api_key=api_key, base_url=GEMINI_OPENAI_BASE_URL)
     embedding_client = runtime.genai_client(api_key=api_key)
-    llm = runtime.llm_factory(judge_model, provider="openai", client=judge_client)
+    llm = runtime.llm_factory(
+        judge_model,
+        provider="openai",
+        client=judge_client,
+        max_tokens=JUDGE_MAX_TOKENS,
+    )
     embeddings = runtime.embedding_factory(
         "google",
         model="gemini-embedding-001",
@@ -343,17 +436,28 @@ def run_evaluation(
     judge_model: str,
     scorer: ScoreSamples,
     client: httpx.Client,
+    clock: Callable[[], float] = time.monotonic,
 ) -> int:
-    """Collect seven live samples, persist aggregate-only output, and return a gate code."""
+    """Collect ten live samples, persist aggregate-only output, and return a gate code."""
 
     golden_queries = load_golden_queries(golden_path)
     samples = [
-        fetch_query(client, base_url, golden.query_id, golden.query)
+        fetch_query(
+            client,
+            base_url,
+            golden.query_id,
+            golden.query,
+            golden.expected_documents,
+            golden.expected_page_range,
+            clock=clock,
+        )
         for golden in golden_queries
     ]
     report = scorer(samples)
+    latencies = latency_report(samples)
     try:
         assert_quality_thresholds(report)
+        assert_latency_thresholds(latencies)
         passed = True
     except AssertionError:
         passed = False
@@ -365,6 +469,7 @@ def run_evaluation(
         "golden_query_ids": [golden.query_id for golden in golden_queries],
         "query_count": len(golden_queries),
         "scores": report.model_dump(),
+        "latency_p95_ms": latencies.model_dump(),
         "passed": passed,
     }
     output_path.parent.mkdir(parents=True, exist_ok=True)

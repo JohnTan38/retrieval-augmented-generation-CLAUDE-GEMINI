@@ -21,6 +21,7 @@ function isSourceEvidence(value: unknown): value is SourceEvidence {
   return typeof source.source_id === 'string' && /^S[1-9][0-9]*$/.test(source.source_id) &&
     typeof source.document_id === 'string' && typeof source.filename === 'string' &&
     typeof source.title === 'string' && typeof source.semester === 'string' &&
+    (source.variant === 'research' || source.variant === 'claude') &&
     typeof source.page === 'number' && Number.isInteger(source.page) && source.page > 0 &&
     typeof source.excerpt === 'string' && source.excerpt.length > 0 &&
     typeof source.score === 'number' && Number.isFinite(source.score) && source.score > 0 &&

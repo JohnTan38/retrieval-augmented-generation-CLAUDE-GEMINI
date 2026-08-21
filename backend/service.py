@@ -8,6 +8,7 @@ import math
 import time
 from collections.abc import AsyncIterator, Callable, Sequence
 from dataclasses import dataclass
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, StrictFloat, StrictInt, StrictStr
 
@@ -17,6 +18,7 @@ from backend.citation import validate_citations
 LOGGER = logging.getLogger(__name__)
 MIN_DENSE_SUPPORT = 0.75
 SAFE_REFUSAL = "I do not have enough evidence in the supplied study materials to answer this question."
+ANSWER_PREAMBLE = "## Evidence-backed answer\n\n"
 
 
 class PresentedSource(BaseModel):
@@ -27,8 +29,9 @@ class PresentedSource(BaseModel):
     filename: StrictStr
     title: StrictStr
     semester: StrictStr
+    variant: Literal["research", "claude"]
     page: StrictInt = Field(gt=0)
-    excerpt: StrictStr = Field(min_length=1, max_length=600)
+    excerpt: StrictStr = Field(min_length=1, max_length=1000)
     score: StrictFloat = Field(gt=0)
     download_url: StrictStr
 
@@ -97,9 +100,19 @@ class RagService:
                 except Exception:
                     retrieval_mode = "lexical_degraded"
             else:
-                # The lexical sources can be presented now; do not delay them for
-                # an optional dense rerank that has not completed.
-                retrieval_mode = "lexical_degraded"
+                # Lexical search normally wins this race by hundreds of
+                # milliseconds.  Wait only for the remaining, bounded embedding
+                # budget so the production path actually performs hybrid reranking
+                # without allowing provider latency to break the source SLA.
+                try:
+                    candidate = await _within_budget(embedding_task, deadline, self.embedding_timeout_seconds, self.clock)
+                    vector = _validated_vector(candidate, self.embedding_dimensions)
+                except asyncio.CancelledError:
+                    raise
+                except (TimeoutError, asyncio.TimeoutError):
+                    retrieval_mode = "lexical_degraded"
+                except Exception:
+                    retrieval_mode = "lexical_degraded"
 
             if vector is not None:
                 try:
@@ -132,16 +145,22 @@ class RagService:
             yield _error("generation_timeout", "Answer generation timed out.", retryable=True)
             return
         if _weak(evidence):
-            yield ServerSentEvent(name="complete", data={"request_id": request_id, "timings": _timings(started, self.clock()), "cited_source_ids": [], "citation_valid": True, "refusal": True, "message": SAFE_REFUSAL})
+            yield ServerSentEvent(name="complete", data={"request_id": request_id, "timings": _timings(started, self.clock()), "cited_source_ids": [], "citation_valid": True, "generation_complete": True, "refusal": True, "message": SAFE_REFUSAL})
             return
         answer = ""
-        iterator: AsyncIterator[str] | None = None
+        first_token_ms = _milliseconds(started, self.clock())
+        finish_reason: str | None = None
+        iterator: AsyncIterator[object] | None = None
+        yield ServerSentEvent(name="token", data={"delta": ANSWER_PREAMBLE})
         try:
             iterator = self.gemini.stream_answer(query, sources)
             async with asyncio.timeout(_remaining(deadline, self.generation_timeout_seconds, self.clock)):
-                async for delta in iterator:
+                async for part in iterator:
                     if self.clock() >= deadline:
                         raise TimeoutError
+                    delta, observed_finish_reason = _generation_part(part)
+                    if observed_finish_reason is not None:
+                        finish_reason = observed_finish_reason
                     if delta:
                         answer += delta
                         yield ServerSentEvent(name="token", data={"delta": delta})
@@ -156,17 +175,25 @@ class RagService:
             yield _error("generation_unavailable", "Answer generation is temporarily unavailable.", retryable=True)
             return
         else:
+            if not answer.strip() or (finish_reason is not None and finish_reason != "STOP"):
+                yield _error("generation_incomplete", "Answer generation did not finish. Please retry.", retryable=True, partial_text=answer)
+                return
             citations = validate_citations(answer, {source.source_id for source in sources})
-            yield ServerSentEvent(name="complete", data={"request_id": request_id, "timings": _timings(started, self.clock()), "cited_source_ids": citations.cited_source_ids, "citation_valid": citations.valid})
+            if not citations.valid or not citations.cited_source_ids:
+                yield _error("citation_invalid", "The answer could not be grounded with valid citations. Please retry.", retryable=True, partial_text=answer)
+                return
+            completion_timings = _timings(started, self.clock())
+            completion_timings["first_token_ms"] = first_token_ms
+            yield ServerSentEvent(name="complete", data={"request_id": request_id, "timings": completion_timings, "cited_source_ids": citations.cited_source_ids, "citation_valid": True, "generation_complete": True})
         finally:
             await _close(iterator)
 
 
 def _present(evidence: Sequence[object]) -> list[PresentedSource]:
-    return [PresentedSource(source_id=f"S{position}", document_id=item.document_id, filename=item.filename, title=item.title, semester=item.semester, page=item.page, excerpt=item.excerpt, score=item.score, download_url=item.download_url) for position, item in enumerate(evidence, start=1)]
+    return [PresentedSource(source_id=f"S{position}", document_id=item.document_id, filename=item.filename, title=item.title, semester=item.semester, variant=item.variant, page=item.page, excerpt=item.excerpt, score=item.score, download_url=item.download_url) for position, item in enumerate(evidence, start=1)]
 
 
-async def _close(iterator: AsyncIterator[str] | None) -> None:
+async def _close(iterator: AsyncIterator[object] | None) -> None:
     if iterator is None:
         return
     closer = getattr(iterator, "aclose", None)
@@ -234,8 +261,19 @@ def _timings(started: float, now: float) -> dict[str, int]:
     return {"total_ms": _milliseconds(started, now)}
 
 
-def _error(code: str, message: str, *, retryable: bool) -> ServerSentEvent:
-    return ServerSentEvent(name="error", data={"code": code, "message": message, "retryable": retryable})
+def _error(code: str, message: str, *, retryable: bool, partial_text: str = "") -> ServerSentEvent:
+    data: dict[str, object] = {"code": code, "message": message, "retryable": retryable}
+    if partial_text:
+        data["partial_text"] = partial_text
+    return ServerSentEvent(name="error", data=data)
+
+
+def _generation_part(part: object) -> tuple[str, str | None]:
+    if isinstance(part, str):
+        return part, None
+    text = getattr(part, "text", "")
+    finish_reason = getattr(part, "finish_reason", None)
+    return (text if isinstance(text, str) else "", finish_reason if isinstance(finish_reason, str) else None)
 
 
 def _safe_error_label(error: BaseException) -> str:

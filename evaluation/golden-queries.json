@@ -5,5 +5,8 @@
   {"id":"emotion-coaching","query":"Contrast emotion coaching and emotion dismissing for a two-year-old","expected_documents":["jan-2026"],"expected_topic":"emotion coaching","expected_page_range":[7,9]},
   {"id":"marcia","query":"Explain Marcia identity status theory","expected_documents":["jan-2026"],"expected_topic":"Marcia identity status","expected_page_range":[12,15]},
   {"id":"cognitive-ageing","query":"Distinguish cognitive mechanics and pragmatics in ageing","expected_documents":["jan-2026"],"expected_topic":"cognitive ageing","expected_page_range":[16,16]},
-  {"id":"baltes-soc","query":"Apply Baltes selection optimisation compensation to active ageing","expected_documents":["jan-2026"],"expected_topic":"Baltes selective optimisation with compensation","expected_page_range":[17,20]}
+  {"id":"baltes-soc","query":"Apply Baltes selection optimisation compensation to active ageing","expected_documents":["jan-2026"],"expected_topic":"Baltes selective optimisation with compensation","expected_page_range":[17,20]},
+  {"id":"jan-2025-active-recall","query":"Quiz me with active-recall flashcards on the PPCT engine and Max's force, resource and demand characteristics","expected_documents":["jan-2025-claude"],"expected_topic":"active recall","expected_page_range":[10,10]},
+  {"id":"jul-2025-active-recall","query":"Create an active-recall drill for Bandura's four sources of self-efficacy and triadic reciprocal determinism","expected_documents":["jul-2025-claude"],"expected_topic":"active recall","expected_page_range":[10,10]},
+  {"id":"jan-2026-active-recall","query":"Give me active-recall prompts on Gottman's emotion-coaching sequence and Vygotsky private speech","expected_documents":["jan-2026-claude"],"expected_topic":"active recall","expected_page_range":[9,9]}
 ]
