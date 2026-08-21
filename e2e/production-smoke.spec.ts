@@ -7,7 +7,7 @@ test('production read-only surface is healthy @production', async ({ page }) => 
 
   expect(response?.ok()).toBe(true)
   await expect(page).toHaveTitle(/SgCare Study Desk/i)
-  await expect(page.getByText(/6 documents.*132 pages/i)).toBeVisible()
+  await expect(page.getByRole('status')).toContainText(/6 documents.*132 pages/i)
 })
 
 
@@ -21,5 +21,5 @@ test('one known Gemini query returns cited evidence @production @live-backend', 
   await page.getByRole('button', { name: /find evidence/i }).click()
 
   await expect(page.getByText(/answer complete/i)).toBeVisible({ timeout: 60_000 })
-  await expect(page.getByRole('button', { name: /source s1/i })).toBeVisible()
+  await expect(page.getByRole('button', { name: /source s1/i }).first()).toBeVisible()
 })
